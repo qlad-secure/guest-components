@@ -34,6 +34,13 @@ pub static KEY_WRAPPERS: LazyLock<HashMap<String, Box<dyn KeyWrapper>>> = LazyLo
 
     #[cfg(feature = "keywrap-keyprovider")]
     {
+        // Register mlkem768 key provider
+        m.insert(
+            "mlkem".to_string(),
+            Box::new(crate::keywrap::keyprovider::mlkem::MLKEMKeyWrapper::new())
+                as Box<dyn KeyWrapper>,
+        );
+
         let ocicrypt_config =
             crate::config::OcicryptConfig::from_env(crate::config::OCICRYPT_ENVVARNAME)
                 .expect("Unable to read ocicrypt config file");

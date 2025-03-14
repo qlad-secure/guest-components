@@ -13,6 +13,7 @@ use crate::blockcipher::{
     PrivateLayerBlockCipherOptions, PublicLayerBlockCipherOptions, AES256CTR,
 };
 use crate::config::{DecryptConfig, EncryptConfig};
+use crate::keywrap::keyprovider::mlkem::MLKEMAnnotationPacket;
 use crate::keywrap::KeyWrapper;
 use crate::{get_key_wrapper, KEY_WRAPPERS_ANNOTATIONS};
 
@@ -85,6 +86,16 @@ fn pre_wrap_key(
     let new_annotation = keywrapper.wrap_keys(ec, opts_data)?;
     if new_annotation.is_empty() {
         return Err(anyhow!("new annotations is empty!"));
+    }
+
+    // Check if this is a MLKEM annotation
+    if let Ok(mlkem_annotation) =
+        serde_json::from_str::<MLKEMAnnotationPacket>(std::str::from_utf8(&new_annotation).unwrap())
+    {
+        if mlkem_annotation.wrap_type == "MLKEM768" {
+            // Special handling for MLKEM annotations
+            return Ok(base64::engine::general_purpose::STANDARD.encode(new_annotation));
+        }
     }
 
     let b64_new_annotation = base64::engine::general_purpose::STANDARD.encode(new_annotation);
@@ -303,6 +314,7 @@ pub fn async_decrypt_layer<R: tokio::io::AsyncRead + Send>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keywrap::keyprovider::mlkem::MLKEMKeyWrapper;
     use sha2::{Digest, Sha256};
     use std::env;
     use std::fs;
@@ -404,6 +416,61 @@ mod tests {
             assert_eq!(layer_data, plaintxt_data);
             assert_eq!(digest, dec_digest);
         }
+    }
+
+    #[test]
+    fn test_mlkem_encryption_flow() {
+        let test_data = b"test data";
+        let mut ec = EncryptConfig::default();
+        let seed = vec![0u8; 64]; // Correct 64-byte seed
+
+        let key_wrapper = MLKEMKeyWrapper::with_private_key(
+            &base64::engine::general_purpose::STANDARD.encode(&seed),
+        )
+        .expect("Valid 64-byte seed should create key wrapper");
+
+        // Create test data and encryption config
+        ec.encrypt_with_key_provider(vec![test_data.to_vec()])
+            .expect("Failed to set key provider");
+
+        // Test pre_wrap_key with MLKEM annotation
+        let result = pre_wrap_key(&key_wrapper, &ec, String::new(), test_data);
+
+        assert!(result.is_ok(), "{}", result.unwrap_err().to_string());
+        let wrapped = result.unwrap();
+        assert!(!wrapped.is_empty());
+
+        // Verify the wrapped data is valid base64
+        assert!(base64::engine::general_purpose::STANDARD
+            .decode(&wrapped)
+            .is_ok());
+    }
+
+    #[test]
+    fn test_mlkem_encrypt_decrypt() {
+        // Create a wrapper with fresh keys for encryption
+        let wrapper = MLKEMKeyWrapper::generate();
+
+        // Test data and configs
+        let test_data = b"test decryption flow";
+        let mut ec = EncryptConfig::default();
+        ec.encrypt_with_key_provider(vec![test_data.to_vec()])
+            .expect("Failed to set key provider");
+
+        // Encrypt the data
+        let wrapped =
+            pre_wrap_key(&wrapper, &ec, String::new(), test_data).expect("Failed to wrap key");
+
+        // Decrypt the data
+        let unwrapped = pre_unwrap_key(&wrapper, &DecryptConfig::default(), &wrapped)
+            .expect("Failed to unwrap key");
+
+        // Verify the decrypted data matches original
+        assert_eq!(
+            test_data.to_vec(),
+            unwrapped,
+            "Decrypted data doesn't match original"
+        );
     }
 
     fn load_data_path() -> String {
