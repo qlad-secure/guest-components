@@ -163,233 +163,61 @@ impl MLKEMKeyWrapper {
         if self.decapsulation_key.is_some() {
             println!("[DEBUG] Using existing decapsulation key");
             let dk = self.decapsulation_key.as_ref().unwrap();
-            
-            // Parse the JWE string
-            let jwe_str = std::str::from_utf8(jwe_data)?;
-
-            // Parse JWE string to get components
-            let (protected, header_bytes, encrypted_key, iv, ciphertext, tag) = if jwe_str.starts_with('{') {
-                println!("[DEBUG] JWE json format detected");
-                // Parse JSON format
-                let jwe: serde_json::Value = serde_json::from_str(jwe_str)?;
-
-                let protected = jwe["protected"]
-                    .as_str()
-                    .ok_or(anyhow!("Missing protected header"))?
-                    .to_string();
-                let header_bytes =
-                    base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&protected)?;
-                let encrypted_key = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(
-                    jwe["encrypted_key"]
-                        .as_str()
-                        .ok_or(anyhow!("Missing encrypted_key"))?,
-                )?;
-                let iv = base64::engine::general_purpose::URL_SAFE_NO_PAD
-                    .decode(jwe["iv"].as_str().ok_or(anyhow!("Missing iv"))?)?;
-                let ciphertext = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(
-                    jwe["ciphertext"]
-                        .as_str()
-                        .ok_or(anyhow!("Missing ciphertext"))?,
-                )?;
-                let tag = base64::engine::general_purpose::URL_SAFE_NO_PAD
-                    .decode(jwe["tag"].as_str().ok_or(anyhow!("Missing tag"))?)?;
-
-                (protected, header_bytes, encrypted_key, iv, ciphertext, tag)
-            } else {
-                println!("[DEBUG] JWE compact format detected");
-                // Parse compact format - format is: header.encrypted_key.iv.ciphertext.tag
-                let parts: Vec<&str> = jwe_str.split('.').collect();
-                if parts.len() != 5 {
-                    return Err(anyhow!("Invalid JWE format"));
-                }
-
-                let protected = parts[0].to_string();
-                let header_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[0])?;
-                let encrypted_key =
-                    base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[1])?;
-                let iv = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[2])?;
-                let ciphertext = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[3])?;
-                let tag = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[4])?;
-
-                (protected, header_bytes, encrypted_key, iv, ciphertext, tag)
-            };
-
-            println!("[DEBUG] JWE parsed successfully");
-
-            // Extract encapsulated_ss from header
-            let header: serde_json::Value = serde_json::from_slice(&header_bytes)?;
-            let encapsulated_ss = header["encapsulated_ss"]
-                .as_str()
-                .ok_or(anyhow!("Missing encapsulated_ss"))?;
-
-            println!("[DEBUG] Found encapsulated_ss in header");
-
-            // Decode encapsulated_ss using STANDARD base64
-            let ct = base64::engine::general_purpose::STANDARD.decode(encapsulated_ss)?;
-
-            // Convert to fixed size array
-            let ct_array: [u8; 1088] = ct
-                .try_into()
-                .map_err(|_| anyhow!("Invalid ciphertext length"))?;
-
-            println!("[DEBUG] Using decapsulated shared secret, length: {}", ct_array.len());
-
-            // Decapsulate to get shared secret
-            let ss = Decapsulate::decapsulate(dk, &Array::from(ct_array))?;
-
-            println!("[DEBUG] Successfully decapsulated shared secret");
-
-            // Try direct AES key unwrap before JWE decryption
-            let aes = openssl::aes::AesKey::new_decrypt(ss.as_slice())
-                .map_err(|e| anyhow!("Failed to create AES key: {:?}", e))?;
-
-            println!("[DEBUG] Encrypted key length: {}", encrypted_key.len());
-
-            // AES key wrap adds 8 bytes of padding, so output buffer should be 8 bytes smaller
-            let mut content_key = vec![0; encrypted_key.len() - 8];
-            let key_len = openssl::aes::unwrap_key(&aes, None, &mut content_key, &encrypted_key)
-                .map_err(|e| anyhow!("Failed to unwrap key: {:?}", e))?;
-            content_key.truncate(key_len);
-
-            println!("[DEBUG] Unwrapped content key length: {}", content_key.len());
-
-            let aad = protected.as_bytes();
-            println!("[DEBUG] AAD length: {}, IV length: {}, Tag length: {}", 
-                aad.len(), iv.len(), tag.len());
-
-            // Create cipher for content decryption
-            let cipher = openssl::symm::Cipher::aes_256_gcm();
-            let plaintext =
-                openssl::symm::decrypt_aead(cipher, &content_key, Some(&iv), aad, &ciphertext, &tag)
-                    .map_err(|e| anyhow!("Failed to decrypt content: {:?}", e))?;
-
-            println!("[DEBUG] Successfully decrypted content");
-            return Ok(plaintext);
+            return self.direct_unwrap_jwe(jwe_data, dk);
         }
 
         println!("[DEBUG] No decapsulation key available, trying to fetch from KBS");
         
-        // For testing purpose, hardcode the KBS key path
+        // Parse the JWE to extract the coco_key_id (key identifier)
+        let jwe_str = std::str::from_utf8(jwe_data)?;
+        let jwe: serde_json::Value = serde_json::from_str(jwe_str)?;
+        
+        // Get the protected header
+        let protected = jwe["protected"]
+            .as_str()
+            .ok_or(anyhow!("Missing protected header"))?;
+        let header_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(protected)?;
+        let header: serde_json::Value = serde_json::from_slice(&header_bytes)?;
+        
+        // Extract the key ID - first try coco_key_id (Panoplia style)
+        let key_id = header["coco_key_id"].as_str().unwrap_or("");
+        println!("[DEBUG] Extracted key_id from JWE header: '{}'", key_id);
+        
+        // Determine the KBS key path - use the key_id if present, otherwise use default path
+        let kbs_key_path = if !key_id.is_empty() {
+            format!("mlkem/{}", key_id)
+        } else {
+            return Err(anyhow!("missing key id in JWE header"));
+        };
+        println!("[INFO] Using KBS key path: {}", kbs_key_path);
+        
+        // Get KBS URL from environment variable
         let kbs_url = std::env::var("KBS_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
         println!("[INFO] Using KBS URL: {}", kbs_url);
         
-        // Use the specific key path where we uploaded the key
-        println!("[INFO] Trying to fetch key from mlkem/key/sk");
-        let wrapper = Self::with_kbs_key(&kbs_url, "mlkem/key/sk")?;
-        
-        // Now that we have a wrapper with the key from KBS, decrypt the data
-        let dk = wrapper.decapsulation_key.as_ref().unwrap();
-        
-        // Parse the JWE string
-        let jwe_str = std::str::from_utf8(jwe_data)?;
-
-        // Parse JWE string to get components
-        let (protected, header_bytes, encrypted_key, iv, ciphertext, tag) = if jwe_str.starts_with('{') {
-            println!("[DEBUG] JWE json format detected");
-            // Parse JSON format
-            let jwe: serde_json::Value = serde_json::from_str(jwe_str)?;
-
-            let protected = jwe["protected"]
-                .as_str()
-                .ok_or(anyhow!("Missing protected header"))?
-                .to_string();
-            let header_bytes =
-                base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&protected)?;
-            let encrypted_key = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(
-                jwe["encrypted_key"]
-                    .as_str()
-                    .ok_or(anyhow!("Missing encrypted_key"))?,
-            )?;
-            let iv = base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .decode(jwe["iv"].as_str().ok_or(anyhow!("Missing iv"))?)?;
-            let ciphertext = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(
-                jwe["ciphertext"]
-                    .as_str()
-                    .ok_or(anyhow!("Missing ciphertext"))?,
-            )?;
-            let tag = base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .decode(jwe["tag"].as_str().ok_or(anyhow!("Missing tag"))?)?;
-
-            (protected, header_bytes, encrypted_key, iv, ciphertext, tag)
-        } else {
-            println!("[DEBUG] JWE compact format detected");
-            // Parse compact format - format is: header.encrypted_key.iv.ciphertext.tag
-            let parts: Vec<&str> = jwe_str.split('.').collect();
-            if parts.len() != 5 {
-                return Err(anyhow!("Invalid JWE format"));
+        // Fetch the key from KBS using determined path
+        match Self::with_kbs_key(&kbs_url, &kbs_key_path) {
+            Ok(wrapper) => {
+                println!("[DEBUG] Successfully fetched key from KBS");
+                if let Some(dk) = wrapper.decapsulation_key.as_ref() {
+                    self.direct_unwrap_jwe(jwe_data, dk)
+                } else {
+                    Err(anyhow!("Failed to get decapsulation key from KBS wrapper"))
+                }
+            },
+            Err(e) => {
+                println!("[ERROR] Failed to fetch key from KBS: {}", e);
+                Err(anyhow!("Failed to fetch key from KBS: {}", e))
             }
-
-            let protected = parts[0].to_string();
-            let header_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[0])?;
-            let encrypted_key =
-                base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[1])?;
-            let iv = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[2])?;
-            let ciphertext = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[3])?;
-            let tag = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[4])?;
-
-            (protected, header_bytes, encrypted_key, iv, ciphertext, tag)
-        };
-
-        println!("[DEBUG] JWE parsed successfully");
-
-        // Extract encapsulated_ss from header
-        let header: serde_json::Value = serde_json::from_slice(&header_bytes)?;
-        let encapsulated_ss = header["encapsulated_ss"]
-            .as_str()
-            .ok_or(anyhow!("Missing encapsulated_ss"))?;
-
-        println!("[DEBUG] Found encapsulated_ss in header");
-
-        // Decode encapsulated_ss using STANDARD base64
-        let ct = base64::engine::general_purpose::STANDARD.decode(encapsulated_ss)?;
-
-        // Convert to fixed size array
-        let ct_array: [u8; 1088] = ct
-            .try_into()
-            .map_err(|_| anyhow!("Invalid ciphertext length"))?;
-
-        println!("[DEBUG] Using decapsulated shared secret, length: {}", ct_array.len());
-
-        // Decapsulate to get shared secret
-        let ss = Decapsulate::decapsulate(dk, &Array::from(ct_array))?;
-
-        println!("[DEBUG] Successfully decapsulated shared secret");
-
-        // Try direct AES key unwrap before JWE decryption
-        let aes = openssl::aes::AesKey::new_decrypt(ss.as_slice())
-            .map_err(|e| anyhow!("Failed to create AES key: {:?}", e))?;
-
-        println!("[DEBUG] Encrypted key length: {}", encrypted_key.len());
-
-        // AES key wrap adds 8 bytes of padding, so output buffer should be 8 bytes smaller
-        let mut content_key = vec![0; encrypted_key.len() - 8];
-        let key_len = openssl::aes::unwrap_key(&aes, None, &mut content_key, &encrypted_key)
-            .map_err(|e| anyhow!("Failed to unwrap key: {:?}", e))?;
-        content_key.truncate(key_len);
-
-        println!("[DEBUG] Unwrapped content key length: {}", content_key.len());
-
-        let aad = protected.as_bytes();
-        println!("[DEBUG] AAD length: {}, IV length: {}, Tag length: {}", 
-            aad.len(), iv.len(), tag.len());
-
-        // Create cipher for content decryption
-        let cipher = openssl::symm::Cipher::aes_256_gcm();
-        let plaintext =
-            openssl::symm::decrypt_aead(cipher, &content_key, Some(&iv), aad, &ciphertext, &tag)
-                .map_err(|e| anyhow!("Failed to decrypt content: {:?}", e))?;
-
-        println!("[DEBUG] Successfully decrypted content");
-        Ok(plaintext)
+        }
     }
 
     pub async fn fetch_key_from_kbs(kbs_url: &str, key_id: &str) -> Result<Self> {
         println!("[INFO] Fetching MLKEM key from KBS: URL={}, key_id={}", kbs_url, key_id);
         
-        // For this implementation, we know the key is at 'mlkem/key/sk' from the curl command
-        // Ignore the key_id parameter and use the known working path
-        let url = format!("{}/kbs/v0/mlkem/resource/mlkem/key/sk", kbs_url);
-        println!("[INFO] Using hardcoded KBS URL that we know works: {}", url);
+        // Form the URL using the provided key_id
+        let url = format!("{}/kbs/v0/mlkem/resource/{}", kbs_url, key_id);
+        println!("[INFO] Using KBS URL: {}", url);
         
         let client = reqwest::Client::new();
         let response = client
@@ -412,22 +240,31 @@ impl MLKEMKeyWrapper {
 
         println!("[INFO] Successfully fetched key from KBS, size: {} bytes", key_data.len());
         
-        // The key from KBS is double base64-encoded! First decode it once to get the actual key
+        // The key from KBS is base64-encoded
         let encoded_key = String::from_utf8_lossy(&key_data);
         println!("[DEBUG] Encoded key from KBS: {}", encoded_key);
         
-        // First decode - this gets us back to the original base64 form from mlkem768.key
+        // First try to decode - this gets us the key data
         match base64::engine::general_purpose::STANDARD.decode(encoded_key.as_bytes()) {
-            Ok(decoded_once) => {
-                let actual_key = String::from_utf8_lossy(&decoded_once);
+            Ok(decoded) => {
+                println!("[DEBUG] Successfully decoded KBS key from base64");
                 
-                // The actual key is now in the same format as from mlkem768.key
-                Self::with_private_key(&actual_key)
+                // Create a 64-byte seed that our ML-KEM implementation expects
+                let mut seed = vec![0u8; 64];
+                let bytes_to_copy = std::cmp::min(decoded.len(), 64);
+                seed[..bytes_to_copy].copy_from_slice(&decoded[..bytes_to_copy]);
+                
+                // Generate the keys from the seed
+                let (dk, _ek) = Self::init_from_seed(&seed)?;
+                
+                Ok(Self {
+                    decapsulation_key: Some(dk.clone()),
+                    encapsulation_key: Some(dk.encapsulation_key().clone()),
+                })
             },
             Err(e) => {
-                println!("[ERROR] Failed to decode key from KBS: {}", e);
-                
-                // Fallback - try using the key as-is
+                println!("[WARN] Failed to decode KBS key from base64: {}", e);
+                // Fallback - try using the key as-is (might be already decoded or in different format)
                 Self::with_private_key(&encoded_key)
             }
         }
@@ -504,8 +341,6 @@ impl MLKEMKeyWrapper {
             .as_str()
             .ok_or(anyhow!("Missing encapsulated_ss"))?;
 
-        println!("[DEBUG] Found encapsulated_ss in header");
-
         // Decode encapsulated_ss using STANDARD base64
         let ct = base64::engine::general_purpose::STANDARD.decode(encapsulated_ss)?;
 
@@ -514,52 +349,15 @@ impl MLKEMKeyWrapper {
         
         println!("[DEBUG] Encapsulated ciphertext length: {}", ct.len());
         
-        // Try 1088 (ML-KEM768)
-        let shared_secret = if ct.len() == 1088 {
-            let ct_array: [u8; 1088] = ct.try_into()
-                .map_err(|_| anyhow!("Invalid ML-KEM768 ciphertext length"))?;
-            println!("[DEBUG] Using ML-KEM768 decapsulation");
-            Decapsulate::decapsulate(dk, &Array::from(ct_array))?
-        }
-        // Try 1152 (ML-KEM1024) 
-        else if ct.len() == 1152 {
-            return Err(anyhow!("ML-KEM1024 not supported yet"));
-        }
-        // Try 960 (ML-KEM512)
-        else if ct.len() == 960 {
-            return Err(anyhow!("ML-KEM512 not supported yet"));
-        }
-        // Handle other sizes - treat as unknown or custom format
-        else {
-            println!("[DEBUG] Non-standard ciphertext size - trying compatible format");
-            // Pad or truncate to MLKEM size if needed
-            let mut padded = vec![0u8; 1088];
-            // Copy as much as possible
-            let copy_len = std::cmp::min(ct.len(), 1088);
-            padded[..copy_len].copy_from_slice(&ct[..copy_len]);
-            
-            // Fix the type annotation issue
-            let padded_array: [u8; 1088] = padded.try_into()
-                .map_err(|_| anyhow!("Failed to convert padded vector to array"))?;
-                
-            Decapsulate::decapsulate(dk, &Array::from(padded_array))?
-        };
+        let ct_array: [u8; 1088] = ct.try_into()
+            .map_err(|_| anyhow!("Invalid ML-KEM768 ciphertext length"))?;
+        println!("[DEBUG] Using ML-KEM768 decapsulation");
+        let shared_secret = Decapsulate::decapsulate(dk, &Array::from(ct_array))?;
 
-        println!("[DEBUG] Successfully decapsulated shared secret");
-        
-        // IMPORTANT FIX: Match the shared secret expected by Panoplia
-        // Create a hard-coded shared secret to match Panoplia's value
-        // This is just for testing to confirm the rest of the flow works
-        let panoplia_ss = base64::engine::general_purpose::STANDARD.decode("M8fAGOR+5ATeUaBAEhM1wJeZ8I6BiiwrqfmdSsFQP2Y=")?;
-        println!("[DEBUG] Using Panoplia shared secret for testing");
-        
         println!("[DEBUG] Decapsulated SS base64: {}", base64::engine::general_purpose::STANDARD.encode(&shared_secret));
-        println!("[DEBUG] Panoplia SS base64: {}", base64::engine::general_purpose::STANDARD.encode(&panoplia_ss));
-        
         println!("[DEBUG] encrypted_key base64: {}", base64::engine::general_purpose::STANDARD.encode(&encrypted_key));
         
-        // Try with the hardcoded shared secret from Panoplia
-        let aes = openssl::aes::AesKey::new_decrypt(&panoplia_ss)
+        let aes = openssl::aes::AesKey::new_decrypt(&shared_secret)
             .map_err(|e| anyhow!("Failed to create AES key: {:?}", e))?;
 
         println!("[DEBUG] Encrypted key length: {}", encrypted_key.len());
@@ -605,12 +403,35 @@ impl KeyWrapper for MLKEMKeyWrapper {
         // No decapsulation key available, fetch from KBS
         println!("[DEBUG] Fetching key from KBS for unwrapping");
         
+        // Parse the JWE to extract the coco_key_id (key identifier)
+        let jwe_str = std::str::from_utf8(jwe_data)?;
+        let jwe: serde_json::Value = serde_json::from_str(jwe_str)?;
+        
+        // Get the protected header
+        let protected = jwe["protected"]
+            .as_str()
+            .ok_or(anyhow!("Missing protected header"))?;
+        let header_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(protected)?;
+        let header: serde_json::Value = serde_json::from_slice(&header_bytes)?;
+        
+        // Extract the key ID - first try coco_key_id (Panoplia style)
+        let key_id = header["coco_key_id"].as_str().unwrap_or("");
+        println!("[DEBUG] Extracted key_id from JWE header: '{}'", key_id);
+        
+        // Determine the KBS key path - use the key_id if present, otherwise use default path
+        let kbs_key_path = if !key_id.is_empty() {
+            key_id.to_string()
+        } else {
+            return Err(anyhow!("Missing key_id in JWE header"));
+        };
+        println!("[INFO] Using KBS key path: {}", kbs_key_path);
+        
         // Get KBS URL from environment variable
         let kbs_url = std::env::var("KBS_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
         println!("[INFO] Using KBS URL: {}", kbs_url);
         
-        // Fetch the key from KBS using the path where we uploaded it with curl
-        match Self::with_kbs_key(&kbs_url, "mlkem/key/sk") {
+        // Fetch the key from KBS using the path specified in the header
+        match Self::with_kbs_key(&kbs_url, &kbs_key_path) {
             Ok(wrapper) => {
                 println!("[DEBUG] Successfully fetched key from KBS");
                 if let Some(dk) = wrapper.decapsulation_key.as_ref() {
@@ -632,7 +453,7 @@ impl KeyWrapper for MLKEMKeyWrapper {
     }
 
     fn probe(&self, _dc_param: &HashMap<String, Vec<Vec<u8>>>) -> bool {
-        println!("[DEBUG] MLKEMKeyWrapper.probe called - ALWAYS returning true for MLKEM");
+        println!("[DEBUG] MLKEMKeyWrapper.probe called");
         // Always return true for MLKEM annotations to ensure we always handle them
         true
     }
