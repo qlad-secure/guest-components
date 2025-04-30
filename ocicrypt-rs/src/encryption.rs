@@ -116,6 +116,7 @@ fn pre_unwrap_key(
     dc: &DecryptConfig,
     b64_annotations: &str,
 ) -> Result<Vec<u8>> {
+    println!("[DEBUG] keywrapper type: {}", std::any::type_name_of_val(keywrapper));
     if b64_annotations.is_empty() {
         return Err(anyhow!("annotations is empty!"));
     }
@@ -123,13 +124,16 @@ fn pre_unwrap_key(
     let mut errs = String::new();
     for b64_annotation in b64_annotations.split(',') {
         let annotation = base64::engine::general_purpose::STANDARD.decode(b64_annotation)?;
+        println!("[DEBUG] Calling unwrap_keys with annotation length: {}", annotation.len());
 
         match keywrapper.unwrap_keys(dc, &annotation) {
             Err(e) => {
+                println!("[DEBUG] unwrap_keys error: {}", e);
                 errs.push_str(&e.to_string());
                 continue;
             }
             Ok(opts_data) => {
+                println!("[DEBUG] unwrap_keys succeeded!");
                 return Ok(opts_data);
             }
         };
@@ -188,8 +192,13 @@ pub fn decrypt_layer_key_opts_data(
     let annotations = annotations.unwrap_or(&DEFAULT_ANNOTATION_MAP);
 
     for (annotations_id, scheme) in KEY_WRAPPERS_ANNOTATIONS.iter() {
+        println!("[DEBUG] Checking annotation: {}", annotations_id);
+        println!("[DEBUG] Decryption config params: {:?}", dc.param);
+        println!("[DEBUG] Scheme: {:?}", scheme);
         if let Some(b64_annotation) = get_layer_key_opts(annotations_id, annotations) {
             let keywrapper = get_key_wrapper(scheme)?;
+            println!("[DEBUG] Keywrapper: {:?}", keywrapper.annotation_id());
+            println!("[DEBUG] Probing keywrapper: {:?}", keywrapper.probe(&dc.param));
             if !keywrapper.probe(&dc.param) {
                 continue;
             }

@@ -43,6 +43,7 @@ pqcrypto-traits = "0.3.5"
 pqcrypto-mlkem = { version = "0.1.0", features = ["serialization"], optional = true }
 ml-kem = { version = "0.3.0-pre", features = ["deterministic"] }
 zerocopy = "0.7.32"
+rand = { version = "0.8", optional = true }
 
 [build-dependencies]
 tonic-build = { workspace = true, optional = true }
@@ -66,7 +67,7 @@ block-cipher-ring = ["aes", "base64-serde", "ctr", "hmac", "ring", "pin-project-
 block-cipher-openssl = ["aes", "base64-serde", "ctr", "hmac", "openssl", "pin-project-lite", "sha2", "kbc?/openssl", "block-cipher"]
 
 keywrap-jwe = ["josekit"]
-keywrap-keyprovider = ["pqcrypto-mlkem", "rand_core", "rand_chacha", "sha3"]
+keywrap-keyprovider = ["pqcrypto-mlkem", "rand_core", "rand_chacha", "sha3", "josekit", "reqwest", "openssl", "tokio", "rand"]
 keywrap-keyprovider-cmd = ["keywrap-keyprovider"]
 keywrap-keyprovider-grpc = [
     "keywrap-keyprovider", 

@@ -41,12 +41,15 @@ pub static KEY_WRAPPERS: LazyLock<HashMap<String, Box<dyn KeyWrapper>>> = LazyLo
                 as Box<dyn KeyWrapper>,
         );
 
+        println!("[DEBUG] MLKEMKeyWrapper registered successfully"); // Debug log
+
         let ocicrypt_config =
             crate::config::OcicryptConfig::from_env(crate::config::OCICRYPT_ENVVARNAME)
                 .expect("Unable to read ocicrypt config file");
         if let Some(ocicrypt_config) = ocicrypt_config {
             let key_providers = ocicrypt_config.key_providers;
             for (provider_name, attrs) in key_providers.iter() {
+                println!("[DEBUG] Registering key provider: {}", provider_name); // Debug log
                 let key_wrapper = Box::new(crate::keywrap::keyprovider::KeyProviderKeyWrapper::new(
                     provider_name.to_string(),
                     attrs.clone(),
@@ -81,8 +84,10 @@ pub fn get_wrapped_keys_map(annotations: &HashMap<String, String>) -> HashMap<St
     let mut wrapped_keys_map = HashMap::new();
 
     for (annotations_id, scheme) in KEY_WRAPPERS_ANNOTATIONS.iter() {
+        println!("[DEBUG] Checking wrapped key annotation: {} -> scheme: {}", annotations_id, scheme);
         if let Some(value) = annotations.get(annotations_id) {
             wrapped_keys_map.insert(scheme.clone(), value.clone());
+            println!("[DEBUG] Found wrapped key for scheme: {}", scheme);
         }
     }
 
