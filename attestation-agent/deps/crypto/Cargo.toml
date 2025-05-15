@@ -10,6 +10,7 @@ license = "Apache-2.0"
 aes-gcm = { workspace = true, optional = true }
 aes-kw = { version = "0.2.1", optional = true }
 anyhow.workspace = true
+log.workspace = true
 base64.workspace = true
 concat-kdf = { version = "0.1.0", optional = true }
 ctr = { workspace = true, optional = true }
@@ -17,6 +18,9 @@ kbs-types.workspace = true
 openssl = { workspace = true, features = ["vendored"], optional = true }
 p256 = { version = "0.13.1", features = ["ecdh", "pem"], optional = true }
 rand.workspace = true
+ml-kem = { version = "0.3.0-pre", features = ["deterministic"], optional = true }
+rand_core = { version = "0.6", optional = true }
+rand_chacha = { version = "0.3", optional = true }
 
 # This is for API compability of p256 who is using the old version of `rand`
 rand_08 = { package = "rand", version = "0.8", optional = true }
@@ -31,7 +35,7 @@ zeroize.workspace = true
 rstest.workspace = true
 
 [features]
-default = ["rust-crypto"]
+default = ["rust-crypto", "mlkem"]
 rust-crypto = [
     "dep:aes-gcm",
     "ctr",
@@ -42,3 +46,4 @@ rust-crypto = [
     "rand_08",
 ]
 openssl = ["dep:openssl"]
+mlkem = ["ml-kem", "rand_core", "rand_chacha", "rand_08"]

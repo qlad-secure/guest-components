@@ -195,8 +195,20 @@ impl KbsClient<Box<dyn EvidenceProvider>> {
             "tee-pubkey": tee_pubkey,
             "nonce": challenge.nonce,
         });
-        let runtime_data =
-            serde_json::to_string(&runtime_data).context("serialize runtime data failed")?;
+        
+        // the dependencies between kbs-client, kbs and a package that users kbs and
+        // image-rs crate differ in a way that serde_json starts to behave differently.
+        // If only using kbs_protocol as a dependency (like kbs-client), the keys in the json object
+        // are sorted alphabetically. If using kbs_protocol and image-rs, the keys are
+        // sorted in the order they are added to the object. This is a workaround to
+        // ensure that the keys are sorted alphabetically.
+        let mut runtime_data_value = serde_json::to_value(&runtime_data)
+            .context("convert runtime data to serde_json::Value failed")?;
+        sort_json_keys(&mut runtime_data_value);
+
+        let runtime_data = serde_json::to_string(&runtime_data_value)
+.context("serialize runtime data failed")?;
+
         let evidence = self
             .generate_evidence(tee, runtime_data, challenge.nonce, algorithm)
             .await?;
@@ -279,6 +291,21 @@ impl KbsClient<Box<dyn EvidenceProvider>> {
             .map_err(|e| Error::GetEvidence(e.to_string()))?;
 
         Ok(tee_evidence)
+    }
+}
+
+/// Recursively sort the keys of a serde_json::Value object, ignoring arrays.
+fn sort_json_keys(value: &mut serde_json::Value) {
+    if let serde_json::Value::Object(map) = value {
+        let mut sorted_map = serde_json::Map::new();
+        let mut keys: Vec<_> = map.keys().cloned().collect();
+        keys.sort();
+        for key in keys {
+            let mut val = map.remove(&key).unwrap();
+            sort_json_keys(&mut val);
+            sorted_map.insert(key, val);
+        }
+        *value = serde_json::Value::Object(sorted_map);
     }
 }
 

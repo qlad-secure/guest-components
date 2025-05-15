@@ -18,7 +18,7 @@ base64-serde = { workspace = true, optional = true }
 cfg-if.workspace = true
 ctr = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }
-josekit = { version = "0.10.1", optional = true }
+josekit = { version = ">=0.7", optional = true }
 kbc = { path = "../attestation-agent/kbc", default-features = false, optional = true }
 openssl = { workspace = true, features = ["vendored"], optional = true }
 pin-project-lite = { version = "0.2.16", optional = true }
@@ -29,21 +29,10 @@ ring = { workspace = true, optional = true}
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2 = { workspace = true, optional = true }
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros"], optional = true }
+tokio = { workspace = true, features = ["rt-multi-thread"], optional = true }
 tonic = { workspace = true, optional = true }
 ttrpc = { workspace = true, features = ["async"], optional = true }
 zeroize = { workspace = true, optional = true }
-reqwest = { workspace = true, features = ["json"], optional = true }
-lazy_static = "1.4"
-rand_core = { version = "0.6", optional = true }
-rand_chacha = { version = "0.3", optional = true }
-sha3 = { version = "0.10", optional = true }
-aes-kw = "0.2.0"
-pqcrypto-traits = "0.3.5"
-pqcrypto-mlkem = { version = "0.1.0", features = ["serialization"], optional = true }
-ml-kem = { version = "0.3.0-pre", features = ["deterministic"] }
-zerocopy = "0.7.32"
-rand = { version = "0.8", optional = true }
 
 [build-dependencies]
 tonic-build = { workspace = true, optional = true }
@@ -67,15 +56,9 @@ block-cipher-ring = ["aes", "base64-serde", "ctr", "hmac", "ring", "pin-project-
 block-cipher-openssl = ["aes", "base64-serde", "ctr", "hmac", "openssl", "pin-project-lite", "sha2", "kbc?/openssl", "block-cipher"]
 
 keywrap-jwe = ["josekit"]
-keywrap-keyprovider = ["pqcrypto-mlkem", "rand_core", "rand_chacha", "sha3", "josekit", "reqwest", "openssl", "tokio", "rand"]
+keywrap-keyprovider = []
 keywrap-keyprovider-cmd = ["keywrap-keyprovider"]
-keywrap-keyprovider-grpc = [
-    "keywrap-keyprovider", 
-    "prost", 
-    "tonic", 
-    "tokio/net",
-    "reqwest"
-]
+keywrap-keyprovider-grpc = ["keywrap-keyprovider", "prost", "tonic", "tokio/net"]
 keywrap-keyprovider-ttrpc = ["keywrap-keyprovider", "protobuf", "async-trait", "ttrpc", "tokio"]
 
 # Use KBC to request KEK

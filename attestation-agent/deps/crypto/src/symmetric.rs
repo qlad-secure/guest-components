@@ -5,6 +5,7 @@
 
 //! APIs for symmetric keys
 
+use std::str;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -14,6 +15,9 @@ use crate::native::*;
 
 #[cfg(all(feature = "rust-crypto", not(feature = "openssl")))]
 use crate::rust::*;
+
+#[cfg(feature = "mlkem")]
+use crate::mlkem::{mlkem_encrypt, mlkem_decrypt};
 
 pub const AES_GCM_256_KEY_BITS: u32 = 256;
 
@@ -32,6 +36,12 @@ pub enum WrapType {
     #[strum(serialize = "A256CTR")]
     #[serde(rename = "A256CTR")]
     Aes256Ctr,
+
+    /// symmetric key is encapsulated with MLKEM768 algorithm
+    #[strum(serialize = "MLKEM768-A256GCM")]
+    #[serde(rename = "MLKEM768-A256GCM")]
+    #[cfg(feature = "mlkem")]
+    Mlkem768Aes256Gcm,
 }
 
 /// Decrypt the given `ciphertext`.
@@ -47,6 +57,8 @@ pub fn decrypt(
     match wrap_type {
         WrapType::Aes256Gcm => aes256gcm::decrypt(&key, &ciphertext, &iv),
         WrapType::Aes256Ctr => aes256ctr::decrypt(&key, &ciphertext, &iv),
+        #[cfg(feature = "mlkem")]
+        WrapType::Mlkem768Aes256Gcm => mlkem_decrypt(&key, &ciphertext, &iv),
     }
 }
 
@@ -80,6 +92,8 @@ pub fn encrypt(
     match wrap_type {
         WrapType::Aes256Gcm => aes256gcm::encrypt(&key, &plaintext, &iv),
         WrapType::Aes256Ctr => aes256ctr::encrypt(&key, &plaintext, &iv),
+        #[cfg(feature = "mlkem")]
+        WrapType::Mlkem768Aes256Gcm => mlkem_encrypt(&key, &plaintext, &iv),
     }
 }
 

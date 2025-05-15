@@ -34,3 +34,6 @@ pub use asymmetric::*;
 
 mod algorithms;
 pub use algorithms::*;
+
+mod mlkem;
+pub use mlkem::*;
