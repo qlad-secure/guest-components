@@ -195,7 +195,7 @@ impl KbsClient<Box<dyn EvidenceProvider>> {
             "tee-pubkey": tee_pubkey,
             "nonce": challenge.nonce,
         });
-        
+
         // the dependencies between kbs-client, kbs and a package that users kbs and
         // image-rs crate differ in a way that serde_json starts to behave differently.
         // If only using kbs_protocol as a dependency (like kbs-client), the keys in the json object
@@ -206,8 +206,8 @@ impl KbsClient<Box<dyn EvidenceProvider>> {
             .context("convert runtime data to serde_json::Value failed")?;
         sort_json_keys(&mut runtime_data_value);
 
-        let runtime_data = serde_json::to_string(&runtime_data_value)
-.context("serialize runtime data failed")?;
+        let runtime_data =
+            serde_json::to_string(&runtime_data_value).context("serialize runtime data failed")?;
 
         let evidence = self
             .generate_evidence(tee, runtime_data, challenge.nonce, algorithm)
@@ -311,6 +311,81 @@ fn sort_json_keys(value: &mut serde_json::Value) {
 
 #[async_trait]
 impl KbsClientCapabilities for KbsClient<Box<dyn EvidenceProvider>> {
+    async fn decapsulate_key(
+        &mut self,
+        resource_uri: ResourceUri,
+        encapsulated_ss: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        let mut remote_url = format!(
+            "{}/{KBS_PREFIX}/mlkem/decapsulate/{}/{}/{}",
+            self.kbs_host_url, resource_uri.repository, resource_uri.r#type, resource_uri.tag
+        );
+        if let Some(ref q) = resource_uri.query {
+            remote_url = format!("{}?{}", remote_url, q);
+        }
+
+        for attempt in 1..=KBS_GET_RESOURCE_MAX_ATTEMPT {
+            debug!("KBS client: trying to request KBS, attempt {attempt}");
+
+            let res = self
+                .http_client
+                .post(&remote_url)
+                .body(encapsulated_ss.clone())
+                .send()
+                .await
+                .map_err(|e| Error::HttpError(format!("get failed: {e:?}")))?;
+
+            match res.status() {
+                reqwest::StatusCode::OK => {
+                    let response = res
+                        .json::<Response>()
+                        .await
+                        .map_err(|e| Error::KbsResponseDeserializationFailed(e.to_string()))?;
+                    let payload_data = self
+                        .tee_key
+                        .decrypt_response(response)
+                        .map_err(|e| Error::DecryptResponseFailed(e.to_string()))?;
+                    return Ok(payload_data);
+                }
+                reqwest::StatusCode::UNAUTHORIZED => {
+                    warn!(
+                        "Authenticating with KBS failed. Perform a new RCAR handshake: {:#?}",
+                        res.json::<ErrorInformation>()
+                            .await
+                            .map_err(|e| Error::KbsResponseDeserializationFailed(e.to_string()))?,
+                    );
+                    self.rcar_handshake()
+                        .await
+                        .map_err(|e| Error::RcarHandshake(e.to_string()))?;
+
+                    continue;
+                }
+                reqwest::StatusCode::NOT_FOUND => {
+                    let errorinfo = format!(
+                        "KBS resource Not Found (Error 404): {:#?}",
+                        res.json::<ErrorInformation>()
+                            .await
+                            .map_err(|e| Error::KbsResponseDeserializationFailed(e.to_string()))?
+                    );
+
+                    return Err(Error::ResourceNotFound(errorinfo));
+                }
+                _ => {
+                    let errorinfo = format!(
+                        "KBS Server Internal Failed, Response: {:#?}",
+                        res.json::<ErrorInformation>()
+                            .await
+                            .map_err(|e| Error::KbsResponseDeserializationFailed(e.to_string()))?
+                    );
+
+                    return Err(Error::KbsInternalError(errorinfo));
+                }
+            }
+        }
+
+        Err(Error::UnAuthorized)
+    }
+
     async fn get_resource(&mut self, resource_uri: ResourceUri) -> Result<Vec<u8>> {
         let mut remote_url = format!(
             "{}/{KBS_PREFIX}/resource/{}/{}/{}",

@@ -1,13 +1,13 @@
-use log::debug;
 use anyhow::{anyhow, bail, Result};
 use base64::Engine;
+use log::debug;
 use ml_kem::array::Array;
 use ml_kem::kem::{Decapsulate, DecapsulationKey, Encapsulate, EncapsulationKey, Kem as MlKem};
 use ml_kem::EncodedSizeUser;
 use ml_kem::KemCore;
 use ml_kem::MlKem768Params;
-use rand_core::SeedableRng;
 use rand_chacha::ChaCha8Rng;
+use rand_core::SeedableRng;
 
 #[cfg(feature = "openssl")]
 use crate::native::*;
@@ -23,10 +23,12 @@ pub fn mlkem_encrypt(key: &[u8], data: &[u8], iv: &[u8]) -> Result<Vec<u8>> {
         .decode(&key)
         .map_err(|e| anyhow!("Failed to decode mlkem key: {:?}", e))?;
 
-    let key_pair = MLKEMKeyPair::from_secret_key(&base64::engine::general_purpose::STANDARD.encode(&sk))
-        .map_err(|e| anyhow!("Failed to create MLKEMKeyPair: {:?}", e))?;
+    let key_pair =
+        MLKEMKeyPair::from_secret_key(&base64::engine::general_purpose::STANDARD.encode(&sk))
+            .map_err(|e| anyhow!("Failed to create MLKEMKeyPair: {:?}", e))?;
 
-    let (ct, ss) = key_pair.encapsulate()
+    let (ct, ss) = key_pair
+        .encapsulate()
         .map_err(|e| anyhow!("Key encapsulation failed: {:?}", e))?;
 
     debug!("Encrypting with shared secret");
@@ -45,32 +47,55 @@ pub fn mlkem_encrypt(key: &[u8], data: &[u8], iv: &[u8]) -> Result<Vec<u8>> {
 pub fn mlkem_decrypt(key: &[u8], encrypted_data: &[u8], iv: &[u8]) -> Result<Vec<u8>> {
     debug!("Decrypting data with MLKEMKeyPair");
 
-    // Parse the encrypted data format "{wrapped_data}:{encapsulated_ss}"
-    let encrypted_str = std::str::from_utf8(encrypted_data)
-        .map_err(|e| anyhow!("Invalid encrypted data format: {:?}", e))?;
-    let parts: Vec<&str> = encrypted_str.split(':').collect();
-    if parts.len() != 2 {
-        bail!("Invalid encrypted data format. Expected 'wrapped_data:encapsulated_ss'");
-    }
+    let (wrapped_data, encapsulated_ss) = parse_encapsulated_ss(encrypted_data)
+        .map_err(|e| anyhow!("Failed to parse encrypted data: {:?}", e))?;
 
-    // Decode Base64-encoded components
-    let wrapped_data = base64::engine::general_purpose::STANDARD
-        .decode(parts[0])
-        .map_err(|e| anyhow!("Failed to decode wrapped_data: {:?}", e))?;
-    let encapsulated_ss = base64::engine::general_purpose::STANDARD
-        .decode(parts[1])
-        .map_err(|e| anyhow!("Failed to decode encapsulated_ss: {:?}", e))?;
-    let sk = base64::engine::general_purpose::STANDARD
-        .decode(&key)
-        .map_err(|e| anyhow!("Failed to decode mlkem key: {:?}", e))?;
+    // // Parse the encrypted data format "{wrapped_data}:{encapsulated_ss}"
+    // let encrypted_str = std::str::from_utf8(encrypted_data)
+    //     .map_err(|e| anyhow!("Invalid encrypted data format: {:?}", e))?;
+    // let parts: Vec<&str> = encrypted_str.split(':').collect();
+    // if parts.len() != 2 {
+    //     bail!("Invalid encrypted data format. Expected 'wrapped_data:encapsulated_ss'");
+    // }
 
-    let key_pair = MLKEMKeyPair::from_secret_key(&base64::engine::general_purpose::STANDARD.encode(&sk))
+    // // Decode Base64-encoded components
+    // let wrapped_data = base64::engine::general_purpose::STANDARD
+    //     .decode(parts[0])
+    //     .map_err(|e| anyhow!("Failed to decode wrapped_data: {:?}", e))?;
+    // let encapsulated_ss = base64::engine::general_purpose::STANDARD
+    //     .decode(parts[1])
+    //     .map_err(|e| anyhow!("Failed to decode encapsulated_ss: {:?}", e))?;
+    // let sk = base64::engine::general_purpose::STANDARD
+    //     .decode(&key)
+    //     .map_err(|e| anyhow!("Failed to decode mlkem key: {:?}", e))?;
+
+    let key_pair = MLKEMKeyPair::from_secret_key(&String::from_utf8_lossy(&key))
         .map_err(|e| anyhow!("Failed to create MLKEMKeyPair: {:?}", e))?;
-    let shared_secret = key_pair.decapsulate(encapsulated_ss.as_slice())
+    let shared_secret = key_pair
+        .decapsulate(encapsulated_ss.as_slice())
         .map_err(|e| anyhow!("Key decapsulation failed: {:?}", e))?;
 
     debug!("Decrypting with shared secret");
     aes256gcm::decrypt(&shared_secret, &wrapped_data, &iv)
+}
+
+pub fn parse_encapsulated_ss(wrapped_data: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+    let parts: Vec<&str> = std::str::from_utf8(wrapped_data)
+        .map_err(|_| anyhow!("Invalid wrapped data format"))?
+        .split(':')
+        .collect();
+    if parts.len() != 2 {
+        bail!("Invalid wrapped data format. Expected 'wrapped_data:encapsulated_ss'");
+    }
+
+    let wrapped_data_decoded = base64::engine::general_purpose::STANDARD
+        .decode(parts[0])
+        .map_err(|e| anyhow!("Failed to decode wrapped_data: {:?}", e))?;
+    let encapsulated_ss_decoded = base64::engine::general_purpose::STANDARD
+        .decode(parts[1])
+        .map_err(|e| anyhow!("Failed to decode encapsulated_ss: {:?}", e))?;
+
+    Ok((wrapped_data_decoded, encapsulated_ss_decoded))
 }
 
 pub struct MLKEMKeyPair {
@@ -112,15 +137,15 @@ impl MLKEMKeyPair {
 
     pub fn encapsulate(&self) -> Result<(Vec<u8>, Vec<u8>)> {
         debug!("encapsulating shared secret");
-        
+
         if let Some(ek) = &self.encapsulation_key {
             let mut rng = ChaCha8Rng::from_rng(&mut rand_08::thread_rng())
                 .map_err(|e| anyhow!("Failed to create RNG: {:?}", e))?;
-            let (ct, ss) = Encapsulate::encapsulate(ek,  &mut rng)
+            let (ct, ss) = Encapsulate::encapsulate(ek, &mut rng)
                 .map_err(|e| anyhow!("Key encapsulation failed: {:?}", e))?;
 
             Ok((ct.to_vec(), ss.to_vec()))
-    } else {
+        } else {
             bail!("Decapsulation key is not set");
         }
     }
@@ -148,27 +173,31 @@ impl MLKEMKeyPair {
     }
 
     pub fn from_secret_key(sk_input: &str) -> Result<Self> {
-        debug!("Creating MLKEMKeyPair with input: length={}", sk_input.len());
-        
+        debug!(
+            "Creating MLKEMKeyPair with input: length={}",
+            sk_input.len()
+        );
+
         let sk_bytes = match base64::engine::general_purpose::STANDARD.decode(sk_input) {
             Ok(decoded) => {
-                debug!("Successfully decoded input as base64: length={}", decoded.len());
+                debug!(
+                    "Successfully decoded input as base64: length={}",
+                    decoded.len()
+                );
                 decoded
-            },
+            }
             Err(e) => {
                 debug!("Input is not valid base64, using as raw bytes: {}", e);
                 sk_input.as_bytes().to_vec()
             }
         };
-        
-        debug!("Final key bytes length: {}", sk_bytes.len());
-        
+
         let mut seed = vec![0u8; 64];
         let bytes_to_copy = std::cmp::min(sk_bytes.len(), 64);
         seed[..bytes_to_copy].copy_from_slice(&sk_bytes[..bytes_to_copy]);
-        
+
         debug!("Created 64-byte seed from key bytes");
-        
+
         let (dk, _ek) = Self::init_from_seed(&seed)?;
         let ek = dk.encapsulation_key().clone();
 
@@ -196,19 +225,16 @@ mod tests {
     use base64::Engine;
     use rstest::rstest;
 
-    use crate::{MLKEMKeyPair, mlkem_decrypt, mlkem_encrypt};
+    use crate::{mlkem_decrypt, mlkem_encrypt, MLKEMKeyPair};
 
     #[test]
     fn test_mlkem_key_pair() {
         // Create wrapper with fresh keys
-        let key_pair = MLKEMKeyPair::generate()
-            .expect("failed to generate key pair");
+        let key_pair = MLKEMKeyPair::generate().expect("failed to generate key pair");
 
-        let (ct, ss) = key_pair.encapsulate()
-            .expect("failed to encapsulate");
+        let (ct, ss) = key_pair.encapsulate().expect("failed to encapsulate");
 
-        let ss_from_decaps = key_pair.decapsulate(&ct)
-            .expect("failed to decapsulate");
+        let ss_from_decaps = key_pair.decapsulate(&ct).expect("failed to decapsulate");
 
         assert_eq!(ss, ss_from_decaps);
     }
@@ -219,16 +245,9 @@ mod tests {
         b"plaintext1",
         b"unique nonce"
     )]
-    fn mlkem_encrypt_decrypt(
-        #[case] key: &[u8],
-        #[case] plaintext: &[u8],
-        #[case] iv: &[u8],
-    ) {
-        let ciphertext =
-            mlkem_encrypt(key, plaintext, iv).expect("encryption failed");
-        let plaintext_de =
-            mlkem_decrypt(key, &ciphertext, iv)
-                .expect("decryption failed");
+    fn mlkem_encrypt_decrypt(#[case] key: &[u8], #[case] plaintext: &[u8], #[case] iv: &[u8]) {
+        let ciphertext = mlkem_encrypt(key, plaintext, iv).expect("encryption failed");
+        let plaintext_de = mlkem_decrypt(key, &ciphertext, iv).expect("decryption failed");
         assert_eq!(plaintext, plaintext_de);
     }
 
@@ -252,9 +271,7 @@ mod tests {
             .decode(wrapped_data_64)
             .expect("failed to decode wrapped data");
 
-        let plaintext_de =
-            mlkem_decrypt(key, &wrapped_data, &iv)
-                .expect("decryption failed");
+        let plaintext_de = mlkem_decrypt(key, &wrapped_data, &iv).expect("decryption failed");
         assert_eq!(plaintext, plaintext_de);
     }
 }
