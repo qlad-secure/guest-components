@@ -4,6 +4,7 @@
 //
 
 use async_trait::async_trait;
+use base64::Engine;
 use kbs_types::{ErrorInformation, Response};
 use log::{debug, warn};
 use resource_uri::ResourceUri;
@@ -35,13 +36,14 @@ impl KbsClientCapabilities for KbsClient<Box<dyn TokenProvider>> {
         resource_uri: ResourceUri,
         encapsulated_ss: Vec<u8>,
     ) -> Result<Vec<u8>> {
-        let mut remote_url = format!(
-            "{}/{KBS_PREFIX}/mlkem/decapsulate/{}/{}/{}",
-            self.kbs_host_url, resource_uri.repository, resource_uri.r#type, resource_uri.tag
+        let remote_url = format!(
+            "{}/{KBS_PREFIX}/mlkem/decapsulate/{}/{}/{}?encapsulated_ss={}",
+            self.kbs_host_url,
+            resource_uri.repository,
+            resource_uri.r#type,
+            resource_uri.tag,
+            base64::engine::general_purpose::URL_SAFE.encode(encapsulated_ss.clone())
         );
-        if let Some(ref q) = resource_uri.query {
-            remote_url = format!("{}?{}", remote_url, q);
-        }
 
         for attempt in 1..=KBS_GET_RESOURCE_MAX_ATTEMPT {
             debug!("KBS client: trying to request KBS, attempt {attempt}");
@@ -53,8 +55,7 @@ impl KbsClientCapabilities for KbsClient<Box<dyn TokenProvider>> {
 
             let res = self
                 .http_client
-                .post(&remote_url)
-                .body(encapsulated_ss.clone())
+                .get(&remote_url)
                 .bearer_auth(&token.content)
                 .send()
                 .await

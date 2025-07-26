@@ -31,7 +31,7 @@ impl KbcInterface for Kbc {
     }
 
     async fn decrypt_payload(&mut self, ap: AnnotationPacket) -> Result<Vec<u8>> {
-        let wrap_type = WrapType::try_from(&ap.wrap_type[..])?;
+        let mut wrap_type = WrapType::try_from(&ap.wrap_type[..])?;
 
         debug!("fetching key from KBS");
         let (key_data, annotation_packet) = match wrap_type {
@@ -39,22 +39,34 @@ impl KbcInterface for Kbc {
             WrapType::Mlkem768Aes256Gcm => {
                 debug!("ML-KEM wrap type detected, calling kbs to unwrap key");
 
-                let (wrapped_data, encapsulated_ss) = parse_encapsulated_ss(&ap.wrapped_data)?;
+                let (wrapped_data, encapsulated_ss) = parse_encapsulated_ss(
+                    &base64::engine::general_purpose::STANDARD.decode(ap.wrapped_data)?,
+                )?;
+
+                let key_data = self
+                    .kbs_client
+                    .decapsulate_key(ap.kid.clone(), encapsulated_ss)
+                    .await
+                    .context("Failed to decapsulate key from KBS")?;
+
+                wrap_type = WrapType::Aes256Gcm;
 
                 (
-                    self.kbs_client
-                        .decapsulate_key(ap.kid, encapsulated_ss)
-                        .await,
+                    key_data,
                     AnnotationPacket {
-                        kid: ap.kid.clone(),
-                        wrapped_data: wrapped_data.as_str().to_string(),
+                        kid: ap.kid,
+                        wrapped_data: base64::engine::general_purpose::STANDARD
+                            .encode(wrapped_data),
                         iv: ap.iv.clone(),
-                        wrap_type: WrapType::aes256gcm.to_string(),
+                        wrap_type: WrapType::Aes256Gcm.as_ref().to_string(),
                     },
                 )
             }
-            _ => (self.kbs_client.get_resource(ap.kid).await, ap.clone()),
-        }?;
+            _ => {
+                let key_data = self.kbs_client.get_resource(ap.kid.clone()).await?;
+                (key_data, ap)
+            }
+        };
         debug!("key data fetched from KBS");
 
         let key = Zeroizing::new(key_data);
