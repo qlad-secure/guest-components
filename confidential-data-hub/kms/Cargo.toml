@@ -20,6 +20,7 @@ kbs_protocol = { path = "../../attestation-agent/kbs_protocol", default-features
     "passport",
     "aa_ttrpc",
     "openssl",
+    "mlkem",
 ], optional = true }
 log.workspace = true
 p12 = { version = "0.6.3", optional = true }
@@ -57,3 +58,4 @@ aliyun = ["chrono", "hex", "p12", "prost", "rand", "reqwest/rustls-tls", "sha2",
 kbs = ["kbs_protocol"]
 ehsm = ["ehsm_client"]
 sev = ["bincode", "crypto", "dep:sev", "prost", "tonic", "uuid", "zeroize"]
+mlkem = ["crypto/mlkem"]

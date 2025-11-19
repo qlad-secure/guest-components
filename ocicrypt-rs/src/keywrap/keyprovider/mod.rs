@@ -9,7 +9,6 @@ use base64::Engine;
 use serde::Serialize;
 
 use crate::config::{DecryptConfig, EncryptConfig, KeyProviderAttrs};
-use crate::helpers::create_decrypt_config;
 use crate::keywrap::KeyWrapper;
 use crate::utils::{self, CommandExecuter};
 

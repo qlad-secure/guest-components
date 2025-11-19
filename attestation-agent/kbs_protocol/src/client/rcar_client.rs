@@ -312,6 +312,7 @@ fn sort_json_keys(value: &mut serde_json::Value) {
 
 #[async_trait]
 impl KbsClientCapabilities for KbsClient<Box<dyn EvidenceProvider>> {
+    #[cfg(feature = "mlkem")]
     async fn decapsulate_key(
         &mut self,
         resource_uri: ResourceUri,

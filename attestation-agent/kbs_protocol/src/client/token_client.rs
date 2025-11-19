@@ -31,6 +31,7 @@ impl KbsClient<Box<dyn TokenProvider>> {
 
 #[async_trait]
 impl KbsClientCapabilities for KbsClient<Box<dyn TokenProvider>> {
+    #[cfg(feature = "mlkem")]
     async fn decapsulate_key(
         &mut self,
         resource_uri: ResourceUri,

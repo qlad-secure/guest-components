@@ -43,7 +43,7 @@ config = { workspace = true, optional = true }
 crypto.path = "../../attestation-agent/deps/crypto"
 env_logger = { workspace = true, optional = true }
 image-rs = { path = "../../image-rs", default-features = false, features = ["kata-cc-rustls-tls"] }
-kms = { path = "../kms", default-features = false }
+kms = { path = "../kms", default-features = false, features = ["kbs", "mlkem"] }
 log.workspace = true
 prost = { workspace = true, optional = true }
 protobuf = { workspace = true, optional = true }
@@ -81,7 +81,7 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
 
 [features]
-default = ["aliyun", "kbs", "bin", "ttrpc", "grpc", "cli"]
+default = ["aliyun", "kbs", "bin", "ttrpc", "grpc", "cli", "mlkem"]
 
 # support aliyun stacks (KMS, ..)
 aliyun = ["tempfile"]
@@ -91,6 +91,8 @@ kbs = ["kms/kbs"]
 
 # support sev to provide confidential resources
 sev = ["kms/sev"]
+
+mlkem = ["crypto/mlkem"]
 
 # support eHSM stacks (KMS, ...)
 ehsm = []

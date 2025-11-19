@@ -28,10 +28,10 @@ pub struct AnnotationPacket {
 impl AnnotationPacket {
     pub(crate) async fn unwrap_key(&self) -> Result<Vec<u8>> {
         use base64::{engine::general_purpose::STANDARD, Engine};
-        use crypto::WrapType;
+        use crypto::{parse_encapsulated_ss, WrapType};
         use kms::{plugins::VaultProvider, Annotations, ProviderSettings};
 
-        let wrap_type = WrapType::try_from(&self.wrap_type[..])
+        let mut wrap_type = WrapType::try_from(&self.wrap_type[..])
             .map_err(|_| Error::UnknownWrapType(self.wrap_type.to_string()))?;
         let kbs_client = kms::new_getter(VaultProvider::Kbs.as_ref(), ProviderSettings::default())
             .await
@@ -40,24 +40,62 @@ impl AnnotationPacket {
                 source: e,
             })?;
         let name = self.kid.whole_uri();
-        let kek = kbs_client
-            .get_secret(&name, &Annotations::default())
-            .await
-            .map_err(|e| Error::KmsError {
-                context: "get KEK failed",
-                source: e,
-            })?;
+
+        let (kek, wrapped_data, iv) = match wrap_type {
+            #[cfg(feature = "mlkem")]
+            WrapType::Mlkem768Aes256Gcm => {
+                let mlkem_client =
+                    kms::new_decapsulator(VaultProvider::Kbs.as_ref(), ProviderSettings::default())
+                        .await
+                        .map_err(|e| Error::KmsError {
+                            context: "create KBC failed",
+                            source: e,
+                        })?;
+
+                let (parsed_wrapped_data, encapsulated_ss) =
+                    parse_encapsulated_ss(&STANDARD.decode(&self.wrapped_data).map_err(|e| {
+                        Error::Base64DecodeFailed {
+                            context: "decode `wrapped_data` for ML-KEM",
+                            source: e,
+                        }
+                    })?)
+                    .map_err(|e| Error::DecryptFailed { source: e })?;
+
+                let kek = mlkem_client
+                    .decapsulate_key(&name, encapsulated_ss)
+                    .await
+                    .map_err(|e| Error::KmsError {
+                        context: "ML-KEM decapsulation failed",
+                        source: e,
+                    })?;
+
+                wrap_type = WrapType::Aes256Gcm;
+
+                (kek, STANDARD.encode(parsed_wrapped_data), self.iv.clone())
+            }
+            _ => {
+                let kek = kbs_client
+                    .get_secret(&name, &Annotations::default())
+                    .await
+                    .map_err(|e| Error::KmsError {
+                        context: "get KEK failed",
+                        source: e,
+                    })?;
+
+                (kek, self.wrapped_data.clone(), self.iv.clone())
+            }
+        };
 
         let lek = crypto::decrypt(
             kek.into(),
             STANDARD
-                .decode(&self.wrapped_data)
+                .decode(&wrapped_data)
                 .map_err(|e| Error::Base64DecodeFailed {
                     context: "decode `wrapped_data`",
                     source: e,
                 })?,
             STANDARD
-                .decode(&self.iv)
+                .decode(&iv)
                 .map_err(|e| Error::Base64DecodeFailed {
                     context: "decode `iv`",
                     source: e,
