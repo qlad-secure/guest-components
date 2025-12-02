@@ -50,25 +50,6 @@ pub fn mlkem_decrypt(key: &[u8], encrypted_data: &[u8], iv: &[u8]) -> Result<Vec
     let (wrapped_data, encapsulated_ss) = parse_encapsulated_ss(encrypted_data)
         .map_err(|e| anyhow!("Failed to parse encrypted data: {:?}", e))?;
 
-    // // Parse the encrypted data format "{wrapped_data}:{encapsulated_ss}"
-    // let encrypted_str = std::str::from_utf8(encrypted_data)
-    //     .map_err(|e| anyhow!("Invalid encrypted data format: {:?}", e))?;
-    // let parts: Vec<&str> = encrypted_str.split(':').collect();
-    // if parts.len() != 2 {
-    //     bail!("Invalid encrypted data format. Expected 'wrapped_data:encapsulated_ss'");
-    // }
-
-    // // Decode Base64-encoded components
-    // let wrapped_data = base64::engine::general_purpose::STANDARD
-    //     .decode(parts[0])
-    //     .map_err(|e| anyhow!("Failed to decode wrapped_data: {:?}", e))?;
-    // let encapsulated_ss = base64::engine::general_purpose::STANDARD
-    //     .decode(parts[1])
-    //     .map_err(|e| anyhow!("Failed to decode encapsulated_ss: {:?}", e))?;
-    // let sk = base64::engine::general_purpose::STANDARD
-    //     .decode(&key)
-    //     .map_err(|e| anyhow!("Failed to decode mlkem key: {:?}", e))?;
-
     let key_pair = MLKEMKeyPair::from_secret_key(&String::from_utf8_lossy(&key))
         .map_err(|e| anyhow!("Failed to create MLKEMKeyPair: {:?}", e))?;
     let shared_secret = key_pair

@@ -21,7 +21,7 @@ pub use resource_uri::ResourceUri;
 use tokio::sync::Mutex;
 
 use crate::{Annotations, Error, Getter, Result};
-#[cfg(feature = "mlkem")]
+#[cfg(feature = "mlkem_unwrap")]
 use crate::Decapsulator;
 
 enum RealClient {
@@ -57,7 +57,7 @@ static KBS_CLIENT: LazyLock<Arc<Mutex<Option<RealClient>>>> =
 #[async_trait]
 pub trait Kbc: Send + Sync {
     async fn get_resource(&mut self, _rid: ResourceUri) -> Result<Vec<u8>>;
-    #[cfg(feature = "mlkem")]
+    #[cfg(feature = "mlkem_unwrap")]
     async fn decapsulate_key(&mut self, _rid: ResourceUri, _encapsulated_ss: Vec<u8>) -> Result<Vec<u8>>;
 }
 
@@ -96,7 +96,7 @@ impl Getter for KbcClient {
 }
 
 #[async_trait]
-#[cfg(all(feature = "mlkem"))]
+#[cfg(all(feature = "mlkem_unwrap"))]
 impl Decapsulator for KbcClient {
     async fn decapsulate_key(&self, name: &str, encapsulated_ss: Vec<u8>) -> Result<Vec<u8>> {
         let resource_uri = ResourceUri::try_from(name)

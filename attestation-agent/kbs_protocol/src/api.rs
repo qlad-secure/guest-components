@@ -10,7 +10,7 @@ pub use resource_uri::ResourceUri;
 #[async_trait]
 pub trait KbsClientCapabilities {
     async fn get_resource(&mut self, resource_uri: ResourceUri) -> Result<Vec<u8>>;
-    #[cfg(feature = "mlkem")]
+    #[cfg(feature = "mlkem_unwrap")]
     async fn decapsulate_key(
         &mut self,
         resource_uri: ResourceUri,

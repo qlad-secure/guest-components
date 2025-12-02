@@ -8,7 +8,7 @@ use std::str::FromStr;
 use strum::{AsRefStr, EnumString};
 
 use crate::{Decrypter, Error, Getter, ProviderSettings, Result};
-#[cfg(feature = "mlkem")]
+#[cfg(feature = "mlkem_unwrap")]
 use crate::Decapsulator;
 
 const _IN_GUEST_DEFAULT_KEY_PATH: &str = "/run/confidential-containers/cdh/kms-credential";
@@ -79,7 +79,7 @@ pub async fn new_getter(
     }
 }
 
-#[cfg(feature = "mlkem")]
+#[cfg(feature = "mlkem_unwrap")]
 pub async fn new_decapsulator(
     provider_name: &str,
     _provider_settings: ProviderSettings,

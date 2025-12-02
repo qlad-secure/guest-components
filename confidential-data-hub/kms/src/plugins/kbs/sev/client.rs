@@ -171,7 +171,7 @@ impl Kbc for OnlineSevKbc {
         }
     }
 
-    #[cfg(feature = "mlkem")]
+    #[cfg(feature = "mlkem_unwrap")]
     async fn decapsulate_key(&mut self, _rid: ResourceUri, _encapsulated_ss: Vec<u8>) -> Result<Vec<u8>> {
         Err(Error::KbsClientError(
             "offline-fs-kbc: ML-KEM decapsulation not supported".to_string()

@@ -61,7 +61,7 @@ impl Kbc for CcKbc {
         Ok(secret)
     }
 
-    #[cfg(feature = "mlkem")]
+    #[cfg(feature = "mlkem_unwrap")]
     async fn decapsulate_key(
         &mut self,
         rid: ResourceUri,
