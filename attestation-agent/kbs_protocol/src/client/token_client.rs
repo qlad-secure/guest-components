@@ -4,7 +4,6 @@
 //
 
 use async_trait::async_trait;
-use base64::Engine;
 use kbs_types::{ErrorInformation, Response};
 use log::{debug, warn};
 use resource_uri::ResourceUri;

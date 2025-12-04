@@ -71,6 +71,7 @@ csv-attester = ["attester/csv-attester"]
 cca-attester = ["attester/cca-attester"]
 se-attester = ["attester/se-attester"]
 mlkem = []
+mlkem_unwrap = []
 
 rust-crypto = ["reqwest/rustls-tls", "crypto/rust-crypto"]
 openssl = ["reqwest/native-tls-vendored", "crypto/openssl"]

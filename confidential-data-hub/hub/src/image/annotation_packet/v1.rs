@@ -42,7 +42,7 @@ impl AnnotationPacket {
         let name = self.kid.whole_uri();
 
         let (kek, wrapped_data, iv) = match wrap_type {
-            #[cfg(feature = "mlkem_mlkem")]
+            #[cfg(feature = "mlkem_unwrap")]
             WrapType::Mlkem768Aes256Gcm => {
                 let mlkem_client =
                     kms::new_decapsulator(VaultProvider::Kbs.as_ref(), ProviderSettings::default())

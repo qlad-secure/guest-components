@@ -94,6 +94,8 @@ sev = ["kms/sev"]
 
 mlkem = ["crypto/mlkem"]
 
+mlkem_unwrap = []
+
 # support eHSM stacks (KMS, ...)
 ehsm = []
 

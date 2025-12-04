@@ -417,15 +417,15 @@ impl KeyProviderKeyWrapper {
         &self,
         _dc_config: &DecryptConfig,
         _json_string: &[u8],
-        dc_params: &str,
+        _dc_params: &str,
     ) -> Result<KeyProviderKeyWrapProtocolOutput> {
         #[cfg(not(feature = "keywrap-keyprovider-native"))]
         return Err(anyhow!("keyprovider: no support of keyprovider-native"));
         #[cfg(feature = "keywrap-keyprovider-native")]
         {
             let mut _dc_config = _dc_config.clone();
-            if _dc_config.param.is_empty() && dc_params.contains("attestation-agent") {
-                let cc = create_decrypt_config(vec![dc_params.to_string()], vec![]).unwrap();
+            if _dc_config.param.is_empty() && _dc_params.contains("attestation-agent") {
+                let cc = create_decrypt_config(vec![_dc_params.to_string()], vec![]).unwrap();
                 _dc_config = cc.decrypt_config.unwrap();
             }
             let content = String::from_utf8(_json_string.to_vec())?;
