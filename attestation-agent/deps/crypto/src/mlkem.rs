@@ -8,6 +8,8 @@ use ml_kem::KemCore;
 use ml_kem::MlKem768Params;
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
+use hkdf::Hkdf;
+use sha2::Sha256;
 
 #[cfg(feature = "openssl")]
 use crate::native::*;
@@ -31,8 +33,13 @@ pub fn mlkem_encrypt(key: &[u8], data: &[u8], iv: &[u8]) -> Result<Vec<u8>> {
         .encapsulate()
         .map_err(|e| anyhow!("Key encapsulation failed: {:?}", e))?;
 
-    debug!("Encrypting with shared secret");
-    let wrapped_data = aes256gcm::encrypt(&ss, &data, &iv)
+    debug!("Deriving key from shared secret");
+    let key = key_pair
+        .derive(&ss, b"MLKEM768-A256GCM")
+        .map_err(|e| anyhow!("Key derivation failed: {:?}", e))?;
+
+    debug!("Encrypting with derived key");
+    let wrapped_data = aes256gcm::encrypt(&key, &data, &iv)
         .map_err(|e| anyhow!("AES encryption failed: {:?}", e))?;
 
     let wrapped_data_b64 = base64::engine::general_purpose::STANDARD.encode(&wrapped_data);
@@ -56,8 +63,13 @@ pub fn mlkem_decrypt(key: &[u8], encrypted_data: &[u8], iv: &[u8]) -> Result<Vec
         .decapsulate(encapsulated_ss.as_slice())
         .map_err(|e| anyhow!("Key decapsulation failed: {:?}", e))?;
 
-    debug!("Decrypting with shared secret");
-    aes256gcm::decrypt(&shared_secret, &wrapped_data, &iv)
+    debug!("Deriving key from shared secret");
+    let key = key_pair
+        .derive(&shared_secret, b"MLKEM768-A256GCM")
+        .map_err(|e| anyhow!("Key derivation failed: {:?}", e))?;
+
+    debug!("Decrypting with derived key");
+    aes256gcm::decrypt(&key, &wrapped_data, &iv)
 }
 
 pub fn parse_encapsulated_ss(wrapped_data: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
@@ -129,6 +141,15 @@ impl MLKEMKeyPair {
         } else {
             bail!("Decapsulation key is not set");
         }
+    }
+
+    pub fn derive(&self, shared_secret: &[u8], info: &[u8]) -> Result<Vec<u8>> {
+        debug!("mlkem deriving key");
+        let hkdf = Hkdf::<Sha256>::new(None, shared_secret);
+        let mut key = vec![0u8; 32];
+        hkdf.expand(info, &mut key)
+            .map_err(|e| anyhow!("HKDF expansion failed: {:?}", e))?;
+        Ok(key)
     }
 
     fn init_from_seed(

@@ -1371,6 +1371,7 @@ dependencies = [
  "base64 0.22.1",
  "concat-kdf",
  "ctr",
+ "hkdf",
  "kbs-types",
  "log",
  "ml-kem",

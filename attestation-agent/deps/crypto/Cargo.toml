@@ -28,6 +28,7 @@ rsa = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+hkdf = { version = "0.12", optional = true }
 strum.workspace = true
 zeroize.workspace = true
 
@@ -46,4 +47,4 @@ rust-crypto = [
     "rand_08",
 ]
 openssl = ["dep:openssl"]
-mlkem = ["ml-kem", "rand_core", "rand_chacha", "rand_08"]
+mlkem = ["ml-kem", "rand_core", "rand_chacha", "rand_08", "hkdf"]
