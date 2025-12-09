@@ -17,7 +17,7 @@ use crate::native::*;
 use crate::rust::*;
 
 #[cfg(feature = "mlkem")]
-use crate::mlkem::{mlkem_encrypt, mlkem_decrypt};
+use crate::mlkem::{mlkem_encrypt, mlkem_decrypt, Variant};
 
 pub const AES_GCM_256_KEY_BITS: u32 = 256;
 
@@ -42,6 +42,11 @@ pub enum WrapType {
     #[serde(rename = "MLKEM768-A256GCM")]
     #[cfg(feature = "mlkem")]
     Mlkem768Aes256Gcm,
+    /// symmetric key is encapsulated with MLKEM1024 algorithm
+    #[strum(serialize = "MLKEM1024-A256GCM")]
+    #[serde(rename = "MLKEM1024-A256GCM")]
+    #[cfg(feature = "mlkem")]
+    Mlkem1024Aes256Gcm,
 }
 
 /// Decrypt the given `ciphertext`.
@@ -58,7 +63,9 @@ pub fn decrypt(
         WrapType::Aes256Gcm => aes256gcm::decrypt(&key, &ciphertext, &iv),
         WrapType::Aes256Ctr => aes256ctr::decrypt(&key, &ciphertext, &iv),
         #[cfg(feature = "mlkem")]
-        WrapType::Mlkem768Aes256Gcm => mlkem_decrypt(&key, &ciphertext, &iv),
+        WrapType::Mlkem768Aes256Gcm => mlkem_decrypt(&key, &ciphertext, &iv, Variant::Mlkem768),
+        #[cfg(feature = "mlkem")]
+        WrapType::Mlkem1024Aes256Gcm => mlkem_decrypt(&key, &ciphertext, &iv, Variant::Mlkem1024),
     }
 }
 
@@ -93,7 +100,9 @@ pub fn encrypt(
         WrapType::Aes256Gcm => aes256gcm::encrypt(&key, &plaintext, &iv),
         WrapType::Aes256Ctr => aes256ctr::encrypt(&key, &plaintext, &iv),
         #[cfg(feature = "mlkem")]
-        WrapType::Mlkem768Aes256Gcm => mlkem_encrypt(&key, &plaintext, &iv),
+        WrapType::Mlkem768Aes256Gcm => mlkem_encrypt(&key, &plaintext, &iv, Variant::Mlkem768),
+        #[cfg(feature = "mlkem")]
+        WrapType::Mlkem1024Aes256Gcm => mlkem_encrypt(&key, &plaintext, &iv, Variant::Mlkem1024),
     }
 }
 

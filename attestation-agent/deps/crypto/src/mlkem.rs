@@ -2,14 +2,22 @@ use anyhow::{anyhow, bail, Result};
 use base64::Engine;
 use log::debug;
 use ml_kem::array::Array;
-use ml_kem::kem::{Decapsulate, DecapsulationKey, Encapsulate, EncapsulationKey, Kem as MlKem};
-use ml_kem::EncodedSizeUser;
-use ml_kem::KemCore;
-use ml_kem::MlKem768Params;
+use ml_kem::kem::{Decapsulate, DecapsulationKey, Encapsulate, EncapsulationKey, Kem};
+use ml_kem::{EncodedSizeUser, KemCore};
+use ml_kem::{MlKem768Params, MlKem1024Params};
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 use hkdf::Hkdf;
 use sha2::Sha256;
+
+/// MLKEM variant specification
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Variant {
+    /// MLKEM-768 variant
+    Mlkem768,
+    /// MLKEM-1024 variant
+    Mlkem1024,
+}
 
 #[cfg(feature = "openssl")]
 use crate::native::*;
@@ -18,28 +26,41 @@ use crate::native::*;
 use crate::rust::*;
 
 // /// Encrypt data using a shared secret derived from the encapsulation key.
-pub fn mlkem_encrypt(key: &[u8], data: &[u8], iv: &[u8]) -> Result<Vec<u8>> {
-    debug!("Encrypting data with MLKEMKeyPair");
+pub fn mlkem_encrypt(key: &[u8], data: &[u8], iv: &[u8], variant: Variant) -> Result<Vec<u8>> {
+    debug!("Encrypting data with MLKEMKeyPair, variant: {:?}", variant);
 
     let sk = base64::engine::general_purpose::STANDARD
         .decode(&key)
         .map_err(|e| anyhow!("Failed to decode mlkem key: {:?}", e))?;
 
-    let key_pair =
-        MLKEMKeyPair::from_secret_key(&base64::engine::general_purpose::STANDARD.encode(&sk))
-            .map_err(|e| anyhow!("Failed to create MLKEMKeyPair: {:?}", e))?;
-
-    let (ct, ss) = key_pair
-        .encapsulate()
-        .map_err(|e| anyhow!("Key encapsulation failed: {:?}", e))?;
+    let sk_encoded = base64::engine::general_purpose::STANDARD.encode(&sk);
+    let (ct, ss) = match variant {
+        Variant::Mlkem768 => {
+            let key_pair = MLKEMKeyPair768::from_secret_key(&sk_encoded)
+                .map_err(|e| anyhow!("Failed to create MLKEMKeyPair: {:?}", e))?;
+            key_pair.encapsulate()
+                .map_err(|e| anyhow!("Key encapsulation failed: {:?}", e))?
+        }
+        Variant::Mlkem1024 => {
+            let key_pair = MLKEMKeyPair1024::from_secret_key(&sk_encoded)
+                .map_err(|e| anyhow!("Failed to create MLKEMKeyPair: {:?}", e))?;
+            key_pair.encapsulate()
+                .map_err(|e| anyhow!("Key encapsulation failed: {:?}", e))?
+        }
+    };
 
     debug!("Deriving key from shared secret");
-    let key = key_pair
-        .derive(&ss, b"MLKEM768-A256GCM")
-        .map_err(|e| anyhow!("Key derivation failed: {:?}", e))?;
+    let derive_info: &[u8] = match variant {
+        Variant::Mlkem768 => b"MLKEM768-A256GCM",
+        Variant::Mlkem1024 => b"MLKEM1024-A256GCM",
+    };
+    let hkdf = Hkdf::<Sha256>::new(None, &ss);
+    let mut derived_key = vec![0u8; 32];
+    hkdf.expand(derive_info, &mut derived_key)
+        .map_err(|e| anyhow!("HKDF expansion failed: {:?}", e))?;
 
     debug!("Encrypting with derived key");
-    let wrapped_data = aes256gcm::encrypt(&key, &data, &iv)
+    let wrapped_data = aes256gcm::encrypt(&derived_key, &data, &iv)
         .map_err(|e| anyhow!("AES encryption failed: {:?}", e))?;
 
     let wrapped_data_b64 = base64::engine::general_purpose::STANDARD.encode(&wrapped_data);
@@ -51,25 +72,39 @@ pub fn mlkem_encrypt(key: &[u8], data: &[u8], iv: &[u8]) -> Result<Vec<u8>> {
 
 /// Decrypt data using a shared secret derived from the decapsulation key.
 /// The `encrypted_data` is expected to be in the format "{wrapped_data}:{encapsulated_ss}".
-pub fn mlkem_decrypt(key: &[u8], encrypted_data: &[u8], iv: &[u8]) -> Result<Vec<u8>> {
-    debug!("Decrypting data with MLKEMKeyPair");
+pub fn mlkem_decrypt(key: &[u8], encrypted_data: &[u8], iv: &[u8], variant: Variant) -> Result<Vec<u8>> {
+    debug!("Decrypting data with MLKEMKeyPair, variant: {:?}", variant);
 
     let (wrapped_data, encapsulated_ss) = parse_encapsulated_ss(encrypted_data)
         .map_err(|e| anyhow!("Failed to parse encrypted data: {:?}", e))?;
 
-    let key_pair = MLKEMKeyPair::from_secret_key(&String::from_utf8_lossy(&key))
-        .map_err(|e| anyhow!("Failed to create MLKEMKeyPair: {:?}", e))?;
-    let shared_secret = key_pair
-        .decapsulate(encapsulated_ss.as_slice())
-        .map_err(|e| anyhow!("Key decapsulation failed: {:?}", e))?;
+    let shared_secret = match variant {
+        Variant::Mlkem768 => {
+            let key_pair = MLKEMKeyPair768::from_secret_key(&String::from_utf8_lossy(&key))
+                .map_err(|e| anyhow!("Failed to create MLKEMKeyPair: {:?}", e))?;
+            key_pair.decapsulate(encapsulated_ss.as_slice())
+                .map_err(|e| anyhow!("Key decapsulation failed: {:?}", e))?
+        }
+        Variant::Mlkem1024 => {
+            let key_pair = MLKEMKeyPair1024::from_secret_key(&String::from_utf8_lossy(&key))
+                .map_err(|e| anyhow!("Failed to create MLKEMKeyPair: {:?}", e))?;
+            key_pair.decapsulate(encapsulated_ss.as_slice())
+                .map_err(|e| anyhow!("Key decapsulation failed: {:?}", e))?
+        }
+    };
 
     debug!("Deriving key from shared secret");
-    let key = key_pair
-        .derive(&shared_secret, b"MLKEM768-A256GCM")
-        .map_err(|e| anyhow!("Key derivation failed: {:?}", e))?;
+    let derive_info: &[u8] = match variant {
+        Variant::Mlkem768 => b"MLKEM768-A256GCM",
+        Variant::Mlkem1024 => b"MLKEM1024-A256GCM",
+    };
+    let hkdf = Hkdf::<Sha256>::new(None, &shared_secret);
+    let mut derived_key = vec![0u8; 32];
+    hkdf.expand(derive_info, &mut derived_key)
+        .map_err(|e| anyhow!("HKDF expansion failed: {:?}", e))?;
 
     debug!("Decrypting with derived key");
-    aes256gcm::decrypt(&key, &wrapped_data, &iv)
+    aes256gcm::decrypt(&derived_key, &wrapped_data, &iv)
 }
 
 pub fn parse_encapsulated_ss(wrapped_data: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
@@ -91,153 +126,148 @@ pub fn parse_encapsulated_ss(wrapped_data: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> 
     Ok((wrapped_data_decoded, encapsulated_ss_decoded))
 }
 
-pub struct MLKEMKeyPair {
-    decapsulation_key: Option<DecapsulationKey<MlKem768Params>>,
-    encapsulation_key: Option<EncapsulationKey<MlKem768Params>>,
-}
-
-impl MLKEMKeyPair {
-    pub fn new() -> Self {
-        Self {
-            decapsulation_key: None,
-            encapsulation_key: None,
+// Macro to define struct and implement methods for each parameter type
+macro_rules! define_mlkem_keypair {
+    ($name:ident, $params:ty, $ct_size:expr, $pk_size:expr) => {
+        pub struct $name {
+            decapsulation_key: Option<DecapsulationKey<$params>>,
+            encapsulation_key: Option<EncapsulationKey<$params>>,
         }
-    }
 
-    pub fn generate() -> Result<Self> {
-        debug!("generating new mlkem keypair");
+        impl $name {
+            pub fn new() -> Self {
+                Self {
+                    decapsulation_key: None,
+                    encapsulation_key: None,
+                }
+            }
 
-        let mut rng = ChaCha8Rng::from_rng(rand_08::thread_rng())
-            .map_err(|e| anyhow!("Failed to create RNG: {:?}", e))?;
-        let (dk, ek) = MlKem::<MlKem768Params>::generate(&mut rng);
+            pub fn generate() -> Result<Self> {
+                debug!("generating new mlkem keypair");
+                let mut rng = ChaCha8Rng::from_rng(rand_08::thread_rng())
+                    .map_err(|e| anyhow!("Failed to create RNG: {:?}", e))?;
+                let (dk, ek) = Kem::<$params>::generate(&mut rng);
+                Ok(Self {
+                    decapsulation_key: Some(dk),
+                    encapsulation_key: Some(ek),
+                })
+            }
 
-        Ok(Self {
-            decapsulation_key: Some(dk),
-            encapsulation_key: Some(ek),
-        })
-    }
+            pub fn decapsulate(&self, ct: &[u8]) -> Result<Vec<u8>> {
+                debug!("decapsulating with MLKEMKeyPair");
+                let dk = self.decapsulation_key.as_ref()
+                    .ok_or_else(|| anyhow!("Decapsulation key is not set"))?;
+                
+                if ct.len() != $ct_size {
+                    bail!("Invalid CT length, expected {} bytes, got {}", $ct_size, ct.len());
+                }
+                
+                let ct_array: [u8; $ct_size] = ct.try_into()
+                    .map_err(|_| anyhow!("Invalid CT length, expected {} bytes", $ct_size))?;
+                let shared_secret = Decapsulate::decapsulate(dk, &Array::from(ct_array))?;
+                Ok(shared_secret.to_vec())
+            }
 
-    pub fn decapsulate(&self, ct: &[u8]) -> Result<Vec<u8>> {
-        debug!("decapsulating with MLKEMKeyPair");
-        if let Some(dk) = &self.decapsulation_key {
-            let ct_array: [u8; 1088] = ct.try_into().map_err(|_| anyhow!("Invalid CT length"))?;
-            let shared_secret = Decapsulate::decapsulate(dk, &Array::from(ct_array))?;
-            Ok(shared_secret.to_vec())
-        } else {
-            bail!("Decapsulation key is not set");
-        }
-    }
+            pub fn encapsulate(&self) -> Result<(Vec<u8>, Vec<u8>)> {
+                debug!("encapsulating shared secret");
+                let ek = self.encapsulation_key.as_ref()
+                    .ok_or_else(|| anyhow!("Encapsulation key is not set"))?;
+                let mut rng = ChaCha8Rng::from_rng(&mut rand_08::thread_rng())
+                    .map_err(|e| anyhow!("Failed to create RNG: {:?}", e))?;
+                let (ct, ss) = Encapsulate::encapsulate(ek, &mut rng)
+                    .map_err(|e| anyhow!("Key encapsulation failed: {:?}", e))?;
+                Ok((ct.to_vec(), ss.to_vec()))
+            }
 
-    pub fn encapsulate(&self) -> Result<(Vec<u8>, Vec<u8>)> {
-        debug!("encapsulating shared secret");
+            pub fn derive(&self, shared_secret: &[u8], info: &[u8]) -> Result<Vec<u8>> {
+                debug!("mlkem deriving key");
+                let hkdf = Hkdf::<Sha256>::new(None, shared_secret);
+                let mut key = vec![0u8; 32];
+                hkdf.expand(info, &mut key)
+                    .map_err(|e| anyhow!("HKDF expansion failed: {:?}", e))?;
+                Ok(key)
+            }
 
-        if let Some(ek) = &self.encapsulation_key {
-            let mut rng = ChaCha8Rng::from_rng(&mut rand_08::thread_rng())
-                .map_err(|e| anyhow!("Failed to create RNG: {:?}", e))?;
-            let (ct, ss) = Encapsulate::encapsulate(ek, &mut rng)
-                .map_err(|e| anyhow!("Key encapsulation failed: {:?}", e))?;
-
-            Ok((ct.to_vec(), ss.to_vec()))
-        } else {
-            bail!("Decapsulation key is not set");
-        }
-    }
-
-    pub fn derive(&self, shared_secret: &[u8], info: &[u8]) -> Result<Vec<u8>> {
-        debug!("mlkem deriving key");
-        let hkdf = Hkdf::<Sha256>::new(None, shared_secret);
-        let mut key = vec![0u8; 32];
-        hkdf.expand(info, &mut key)
-            .map_err(|e| anyhow!("HKDF expansion failed: {:?}", e))?;
-        Ok(key)
-    }
-
-    fn init_from_seed(
-        seed: &[u8],
-    ) -> Result<(
-        DecapsulationKey<MlKem768Params>,
-        EncapsulationKey<MlKem768Params>,
-    )> {
-        if seed.len() != 64 {
-            bail!("Seed must be exactly 64 bytes (32+32 for d and z)");
-        }
-        let (d, z) = seed.split_at(32);
-        let mut d_bytes = [0u8; 32];
-        d_bytes.copy_from_slice(d);
-        let mut z_bytes = [0u8; 32];
-        z_bytes.copy_from_slice(z);
-
-        let (dk, ek) = MlKem::<MlKem768Params>::generate_deterministic(
-            &Array::from(d_bytes),
-            &Array::from(z_bytes),
-        );
-        Ok((dk, ek))
-    }
-
-    pub fn from_secret_key(sk_input: &str) -> Result<Self> {
-        debug!(
-            "Creating MLKEMKeyPair with input: length={}",
-            sk_input.len()
-        );
-
-        let sk_bytes = match base64::engine::general_purpose::STANDARD.decode(sk_input) {
-            Ok(decoded) => {
-                debug!(
-                    "Successfully decoded input as base64: length={}",
-                    decoded.len()
+            fn init_from_seed(seed: &[u8]) -> Result<(DecapsulationKey<$params>, EncapsulationKey<$params>)> {
+                if seed.len() != 64 {
+                    bail!("Seed must be exactly 64 bytes (32+32 for d and z)");
+                }
+                let (d, z) = seed.split_at(32);
+                let mut d_bytes = [0u8; 32];
+                d_bytes.copy_from_slice(d);
+                let mut z_bytes = [0u8; 32];
+                z_bytes.copy_from_slice(z);
+                let (dk, ek) = Kem::<$params>::generate_deterministic(
+                    &Array::from(d_bytes),
+                    &Array::from(z_bytes),
                 );
-                decoded
+                Ok((dk, ek))
             }
-            Err(e) => {
-                debug!("Input is not valid base64, using as raw bytes: {}", e);
-                sk_input.as_bytes().to_vec()
+
+            pub fn from_secret_key(sk_input: &str) -> Result<Self> {
+                let sk_bytes = match base64::engine::general_purpose::STANDARD.decode(sk_input) {
+                    Ok(decoded) => {
+                        debug!("Successfully decoded input as base64: length={}", decoded.len());
+                        decoded
+                    }
+                    Err(e) => {
+                        debug!("Input is not valid base64, using as raw bytes: {}", e);
+                        sk_input.as_bytes().to_vec()
+                    }
+                };
+                let mut seed = vec![0u8; 64];
+                let bytes_to_copy = std::cmp::min(sk_bytes.len(), 64);
+                seed[..bytes_to_copy].copy_from_slice(&sk_bytes[..bytes_to_copy]);
+                let (dk, ek) = Self::init_from_seed(&seed)?;
+                Ok(Self {
+                    decapsulation_key: Some(dk),
+                    encapsulation_key: Some(ek),
+                })
             }
-        };
 
-        let mut seed = vec![0u8; 64];
-        let bytes_to_copy = std::cmp::min(sk_bytes.len(), 64);
-        seed[..bytes_to_copy].copy_from_slice(&sk_bytes[..bytes_to_copy]);
-
-        debug!("Created 64-byte seed from key bytes");
-
-        let (dk, _ek) = Self::init_from_seed(&seed)?;
-        let ek = dk.encapsulation_key().clone();
-
-        Ok(Self {
-            decapsulation_key: Some(dk),
-            encapsulation_key: Some(ek),
-        })
-    }
-
-    pub fn with_public_key(pk_b64: &str) -> Result<Self> {
-        debug!("Creating MLKEMKeyPair with public key");
-        let pk = base64::engine::general_purpose::STANDARD.decode(pk_b64)?;
-        let pk_array: [u8; 1184] = pk.try_into().map_err(|_| anyhow!("Invalid PK length"))?;
-        let ek = EncapsulationKey::<MlKem768Params>::from_bytes(&Array::from(pk_array));
-
-        Ok(Self {
-            decapsulation_key: None,
-            encapsulation_key: Some(ek),
-        })
-    }
+            pub fn with_public_key(pk_b64: &str) -> Result<Self> {
+                debug!("Creating MLKEMKeyPair with public key");
+                let pk = base64::engine::general_purpose::STANDARD.decode(pk_b64)?;
+                if pk.len() != $pk_size {
+                    bail!("Invalid PK length, expected {} bytes, got {}", $pk_size, pk.len());
+                }
+                let pk_array: [u8; $pk_size] = pk.try_into()
+                    .map_err(|_| anyhow!("Invalid PK length, expected {} bytes", $pk_size))?;
+                let ek = EncapsulationKey::<$params>::from_bytes(&Array::from(pk_array));
+                Ok(Self {
+                    decapsulation_key: None,
+                    encapsulation_key: Some(ek),
+                })
+            }
+        }
+    };
 }
+
+define_mlkem_keypair!(MLKEMKeyPair768, MlKem768Params, 1088, 1184);
+define_mlkem_keypair!(MLKEMKeyPair1024, MlKem1024Params, 1568, 1568);
+
+// Type alias for backward compatibility (using 768 as default)
+pub type MLKEMKeyPair = MLKEMKeyPair768;
 
 #[cfg(test)]
 mod tests {
-    use base64::Engine;
     use rstest::rstest;
 
-    use crate::{mlkem_decrypt, mlkem_encrypt, MLKEMKeyPair};
+    use crate::{mlkem_decrypt, mlkem_encrypt, MLKEMKeyPair768, MLKEMKeyPair1024, Variant};
 
     #[test]
     fn test_mlkem_key_pair() {
-        // Create wrapper with fresh keys
-        let key_pair = MLKEMKeyPair::generate().expect("failed to generate key pair");
-
+        let key_pair = MLKEMKeyPair768::generate().expect("failed to generate key pair");
         let (ct, ss) = key_pair.encapsulate().expect("failed to encapsulate");
-
         let ss_from_decaps = key_pair.decapsulate(&ct).expect("failed to decapsulate");
+        assert_eq!(ss, ss_from_decaps);
+    }
 
+    #[test]
+    fn test_mlkem_key_pair_1024() {
+        let key_pair = MLKEMKeyPair1024::generate().expect("failed to generate key pair");
+        let (ct, ss) = key_pair.encapsulate().expect("failed to encapsulate");
+        let ss_from_decaps = key_pair.decapsulate(&ct).expect("failed to decapsulate");
         assert_eq!(ss, ss_from_decaps);
     }
 
@@ -248,32 +278,8 @@ mod tests {
         b"unique nonce"
     )]
     fn mlkem_encrypt_decrypt(#[case] key: &[u8], #[case] plaintext: &[u8], #[case] iv: &[u8]) {
-        let ciphertext = mlkem_encrypt(key, plaintext, iv).expect("encryption failed");
-        let plaintext_de = mlkem_decrypt(key, &ciphertext, iv).expect("decryption failed");
-        assert_eq!(plaintext, plaintext_de);
-    }
-
-    #[rstest]
-    #[case(
-        b"QmVKOnIEVIjYICXHF33IZ+owdqY2J4z7RNtFIvzQmGVQOpfiRFRmdE6OpEGK5iCN5R+6QR5UfBvsSko/UneVvQ==",
-        b"L0xyN0ZBb054MzdzQ3pjWGRtOXphMWorTzQyNk5GZnpOSWtLOnVCMjgvRmo2MFY3N285SU9yR3BTd215VktGSkNLZ2Fha2dkQWI3b1BldkRrUzdpMkFkZFhzUHUyU0lBV2RtTkhvRHcwMThGYzY1STJVbWJGV3J5NTZya05CY2VTSU9uVnRDUUlnTnMxRG1XWXk0QklXU2ZCV1JPWmRmWVdwa2krelBETlYvSGJIQjkxc0puQmZyWHJQYnkwNkVnUlc3RzVDSzZLZ2p4S2NJQVpFSUw3cmVJMCtxNE82NHVBM1JybXZRR241VFY5a0lOQ01Cc0w5UUNWZE9hU3FUQmFuMGFER1dvNERmSGJEejZ1eDRnMkE4TjJSNm9WekJqeFhOTXJFdis3bXRYbHJ0SlR5NCs5T2ZkNVQ0NjFEZEwrVWVwbEZaTzdHNTRySXVCNTZYaENWYXV6dEVPNDNvRzFKcFlBbWJnREwxeER4T2ZKMDFTOSs4VkI0WjF3biszR3lQOHNMMHZGSmRJa1BmaGdIc0pCNkpkbWd5a1NQYWFpQnZxS3hieFdFZ2pFMVd0WldINWF2QmpVNXhaMDJaVjM2djZqVHlPSUREWWZ4a1RSWFcxcElxeUgzVGRVem52ZXEyMTN1bThiZ0dyejRmVjFCTlBPNW1oOXlySGJOb2txWHRVVDh5Qy9iNTA0eXRzWU1vbnBmbXpsZFAyUzNtZ2Zwcm9jT3lqU0dyMmJxOXJSeCtUTVJ6OCtGdEk1VXNsMDYvd0tGb3ZNZ3JnQXBKa2dvMWd5UWFXQ3ExRUZRS1ZEbG03bDJyam83a3RBK3luZmZGa0RJb1lNamRMMjcyQjNLaDk4L28yMnliUUNGTXIzRHVicWh3QlZTM3dRbHpPYjhDejJIV3ZNOENGOEd6d25aaFJXQ2d3RXJKeVZzaVdyTlRaMENzdTFVa2ZqWkY2VU9MQjkrVmI0eGQraUJFbzJmQXh5VnBnMTEwWC95ajRuN052S0FEY2tPV1ZJTVZxa1BibzQ0Y3VjZ2gvOTFwVDVYV3BzQWJTbXgyR3BUZEtoQTFqN3FHbll1UnhlRExXc3lCbGQ4TGYxM2RHbXQyMVYwM3RORWNZL0diZ2crSG51MkhlUkdUZVV6cmorRjlNY1ZxRzg3ek5zZGNnMUQ5R0s1bGJnaSt3NGs3YWRVSmR6UXBtRGlGMVJ2bkhJeFM5Umx0RksxenJIVmtPVlRGa0p0ODhHS1dJT3dXVXpKaVJNNTJhLzErNlFGU3M5Skd2am5oUzN2TzJ3WVF3Q0tXdEdzZzJwOHNacFNKZzd6U0NpMzFPK1RoeUh4bHA2NVdNOTJXOEM3aXVGc2dpczhqODhkZWtza2ptVkNlejVSY0ZEdlduazZrUUljZlBEaDNqWGRnM1V3ZjNIdzRKek5zWnB4VXpzTTVzS2J6aGtXaHh2T2xkZ3A3K3ZkakRYUEdPaDVjVWoybFBkQm9aUzB5QWJ2SGhvclZwd0owV3pUdHRrQSs4ZDltczU2dzdPRzJLMG5PZXg1OGEvODg5cHdYTi95em5RUFBDbzdCby9nbDU1V3JPaklHMWxxcVVRemZ4QzZNSCs1TWdqU09NRElTd05FTVA4TlhEWmdRTmdyQVQ1ZFBCYzBqRi95N0tJRktXVVRJTmxWWnhSTUJRdlBnajhSbi9ZdkUzc3c0M1krTGpvL0pqNUxvclJacjg4M0dYY0wvanNpeGZXOHhmVjFDRjFiQXo1WExoSTAxRWY1WHJFR2dMdWxSRVZPbmpXSFU4TCt3czIxbUwwa2lXbWl6RDVWVTdQS0JiWjU2NTJWSVNZWnhQR2JvTnd0WVFpWi9tZk5oeUhQanA1MkZvdm42YVRYbmZsMUZjOFYweHZEK0t1WjhIdDFYZDIvSzNLWFFGTEVybFVjVzMvd2FQbDFITExBSXpxNXdaTjByM3N1YlNmckZzUXQ4NVRiZ1gyUGlJPQ==",
-        b"secret data",
-        b"cXDR6i5A7F1U9g4R"
-    )]
-    fn mlkem_decrypt_compatibility(
-        #[case] key: &[u8],
-        #[case] wrapped_data_64: &[u8],
-        #[case] plaintext: &[u8],
-        #[case] iv_64: &[u8],
-    ) {
-        let iv = base64::engine::general_purpose::STANDARD
-            .decode(iv_64)
-            .expect("failed to decode iv");
-        let wrapped_data = base64::engine::general_purpose::STANDARD
-            .decode(wrapped_data_64)
-            .expect("failed to decode wrapped data");
-
-        let plaintext_de = mlkem_decrypt(key, &wrapped_data, &iv).expect("decryption failed");
+        let ciphertext = mlkem_encrypt(key, plaintext, iv, Variant::Mlkem768).expect("encryption failed");
+        let plaintext_de = mlkem_decrypt(key, &ciphertext, iv, Variant::Mlkem768).expect("decryption failed");
         assert_eq!(plaintext, plaintext_de);
     }
 }
