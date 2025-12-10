@@ -51,7 +51,7 @@ jose-b64 = "0.1.2"
 jose-jwa = "0.1.2"
 jose-jwk = "0.1.2"
 jose-jws = "0.1.2"
-kms = { path = "../kms", default-features = false }
+kms = { path = "../kms", default-features = false, features = ["kbs", "mlkem"] }
 libcryptsetup-rs = { version = "0.13.1", optional = true, features = ["mutex"] }
 nix.workspace = true
 p256 = "0.13.2"
@@ -92,7 +92,7 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
 
 [features]
-default = ["aliyun", "kbs", "bin", "ttrpc", "grpc", "cli"]
+default = ["aliyun", "kbs", "bin", "ttrpc", "grpc", "cli", "mlkem"]
 
 # support aliyun stacks (KMS, ..)
 aliyun = ["tempfile", "kms/aliyun"]
@@ -102,6 +102,10 @@ kbs = ["kms/kbs"]
 
 # support sev to provide confidential resources
 sev = ["kms/sev"]
+
+mlkem = ["crypto/mlkem"]
+
+mlkem_unwrap = []
 
 # support eHSM stacks (KMS, ...)
 ehsm = []

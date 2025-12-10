@@ -20,6 +20,7 @@ kbs_protocol = { path = "../../attestation-agent/kbs_protocol", default-features
     "passport",
     "aa_ttrpc",
     "openssl",
+    "mlkem",
 ], optional = true }
 p12 = { version = "0.6.3", optional = true }
 prost = { workspace = true, optional = true }
@@ -78,3 +79,5 @@ sev = [
     "zeroize",
     "protos/grpc",
 ]
+mlkem = ["crypto/mlkem"]
+mlkem_unwrap = []
