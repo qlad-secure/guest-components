@@ -45,7 +45,7 @@ env_logger = { workspace = true, optional = true }
 image-rs = { path = "../../image-rs", default-features = false, features = [
     "kata-cc-rustls-tls",
 ] }
-kms = { path = "../kms", default-features = false }
+kms = { path = "../kms", default-features = false, features = ["kbs", "mlkem"] }
 log.workspace = true
 prost = { workspace = true, optional = true }
 protos = { path = "../../protos", default-features = false, optional = true }
@@ -83,7 +83,7 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }
 
 [features]
-default = ["aliyun", "kbs", "bin", "ttrpc", "grpc", "cli"]
+default = ["aliyun", "kbs", "bin", "ttrpc", "grpc", "cli", "mlkem"]
 
 # support aliyun stacks (KMS, ..)
 aliyun = ["tempfile", "kms/aliyun"]
@@ -93,6 +93,10 @@ kbs = ["kms/kbs"]
 
 # support sev to provide confidential resources
 sev = ["kms/sev"]
+
+mlkem = ["crypto/mlkem"]
+
+mlkem_unwrap = []
 
 # support eHSM stacks (KMS, ...)
 ehsm = []

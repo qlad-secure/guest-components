@@ -60,4 +60,18 @@ impl Kbc for CcKbc {
             .map_err(|e| Error::KbsClientError(format!("get resource failed: {e:?}")))?;
         Ok(secret)
     }
+
+    #[cfg(feature = "mlkem_unwrap")]
+    async fn decapsulate_key(
+        &mut self,
+        rid: ResourceUri,
+        encapsulated_ss: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        let secret = self
+            .client
+            .decapsulate_key(rid, encapsulated_ss)
+            .await
+            .map_err(|e| Error::KbsClientError(format!("decapsulate key failed: {e:?}")))?;
+        Ok(secret)
+    }
 }

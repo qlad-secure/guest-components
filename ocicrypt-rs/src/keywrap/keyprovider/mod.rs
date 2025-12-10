@@ -321,12 +321,14 @@ impl KeyProviderKeyWrapper {
         }
         #[cfg(feature = "keywrap-keyprovider-ttrpc")]
         {
-            use anyhow::Context;
-
             let ttrpc = ttrpc.to_string();
             let protocol_output =
                 KeyProviderKeyWrapProtocolOutput::from_ttrpc(_input, &ttrpc, OpKey::Wrap)
-                    .context("keyprovider: ttrpc provider failed to execute Wrap")?;
+                    .map_err(|e| {
+                        anyhow!(
+                            "keyprovider: ttrpc provider failed to execute Wrap: {e:?}"
+                        )
+                    })?;
             if let Some(result) = protocol_output.key_wrap_results {
                 Ok(result.annotation)
             } else {
@@ -402,11 +404,14 @@ impl KeyProviderKeyWrapper {
         ));
         #[cfg(feature = "keywrap-keyprovider-ttrpc")]
         {
-            use anyhow::Context;
             let ttrpc = ttrpc.to_string();
 
             KeyProviderKeyWrapProtocolOutput::from_ttrpc(_input, &ttrpc, OpKey::Unwrap)
-                .context("keyprovider: failed to unwrap key by ttrpc")
+                .map_err(|e| {
+                    anyhow!(
+                        "keyprovider: failed to unwrap key by ttrpc: {e:?}"
+                    )
+                })
         }
     }
 
@@ -414,13 +419,19 @@ impl KeyProviderKeyWrapper {
         &self,
         _dc_config: &DecryptConfig,
         _json_string: &[u8],
+        _dc_params: &str,
     ) -> Result<KeyProviderKeyWrapProtocolOutput> {
         #[cfg(not(feature = "keywrap-keyprovider-native"))]
         return Err(anyhow!("keyprovider: no support of keyprovider-native"));
         #[cfg(feature = "keywrap-keyprovider-native")]
         {
+            let mut _dc_config = _dc_config.clone();
+            if _dc_config.param.is_empty() && _dc_params.contains("attestation-agent") {
+                let cc = create_decrypt_config(vec![_dc_params.to_string()], vec![]).unwrap();
+                _dc_config = cc.decrypt_config.unwrap();
+            }
             let content = String::from_utf8(_json_string.to_vec())?;
-            KeyProviderKeyWrapProtocolOutput::from_native(&content, _dc_config).map_err(|e| {
+            KeyProviderKeyWrapProtocolOutput::from_native(&content, &_dc_config).map_err(|e| {
                 anyhow!(
                     "keyprovider: error from crate provider for {} operation: {e:?}",
                     OpKey::Unwrap,
@@ -503,7 +514,7 @@ impl KeyWrapper for KeyProviderKeyWrapper {
         } else if let Some(ttrpc) = self.attrs.ttrpc.as_ref() {
             self.unwrap_key_ttrpc(_serialized_input, ttrpc)?
         } else if let Some(_native) = self.attrs.native.as_ref() {
-            self.unwrap_key_native(dc_config, json_string)?
+            self.unwrap_key_native(dc_config, json_string, _native)?
         } else {
             return Err(anyhow!(
                 "keyprovider: invalid configuration, both grpc and runner are NULL"

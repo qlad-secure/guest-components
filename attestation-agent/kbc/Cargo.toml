@@ -20,7 +20,10 @@ serde.workspace = true
 serde_json.workspace = true
 sev = { path = "../deps/sev", optional = true }
 strum.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"], optional = true }
+tokio = { workspace = true, features = [
+    "macros",
+    "rt-multi-thread",
+], optional = true }
 tonic = { workspace = true, optional = true }
 url.workspace = true
 uuid = { workspace = true, features = ["serde", "v4"], optional = true }
@@ -34,15 +37,15 @@ rstest.workspace = true
 tonic-build = { workspace = true, optional = true }
 
 [features]
-default = ["sample_kbc", "rust-crypto"]
+default = ["sample_kbc", "rust-crypto", "mlkem"]
 
 cc_kbc = ["kbs_protocol/background_check"]
 all-attesters = ["kbs_protocol?/all-attesters"]
 tdx-attester = ["kbs_protocol/tdx-attester"]
 tdx-attester-libtdx = ["kbs_protocol/tdx-attester-libtdx"]
 sgx-attester = ["kbs_protocol/sgx-attester"]
-az-snp-vtpm-attester= ["kbs_protocol/az-snp-vtpm-attester"]
-az-tdx-vtpm-attester= ["kbs_protocol/az-tdx-vtpm-attester"]
+az-snp-vtpm-attester = ["kbs_protocol/az-snp-vtpm-attester"]
+az-tdx-vtpm-attester = ["kbs_protocol/az-tdx-vtpm-attester"]
 snp-attester = ["kbs_protocol/snp-attester"]
 cca-attester = ["kbs_protocol/cca-attester"]
 se-attester  = ["kbs_protocol/se-attester"]
@@ -53,6 +56,7 @@ offline_fs_kbc = []
 online_sev_kbc = ["tonic", "sev", "prost", "uuid", "bincode", "tokio"]
 gen-proto = ["tonic-build"]
 
+mlkem = ["crypto/mlkem", "kbs_protocol/mlkem"]
 # Either `rust-crypto` or `openssl` should be enabled to work as underlying crypto module
 rust-crypto = ["crypto/rust-crypto", "kbs_protocol?/rust-crypto"]
 openssl = ["crypto/openssl", "kbs_protocol?/openssl"]

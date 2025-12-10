@@ -308,6 +308,82 @@ impl KbsClient<Box<dyn EvidenceProvider>> {
 
 #[async_trait]
 impl KbsClientCapabilities for KbsClient<Box<dyn EvidenceProvider>> {
+    #[cfg(feature = "mlkem_unwrap")]
+    async fn decapsulate_key(
+        &mut self,
+        resource_uri: ResourceUri,
+        encapsulated_ss: Vec<u8>,
+    ) -> Result<Vec<u8>> {
+        let remote_url = format!(
+            "{}/{KBS_PREFIX}/mlkem/decapsulate/{}/{}/{}?encapsulated_ss={}",
+            self.kbs_host_url,
+            resource_uri.repository,
+            resource_uri.r#type,
+            resource_uri.tag,
+            base64::engine::general_purpose::URL_SAFE.encode(encapsulated_ss.clone())
+        );
+
+        for attempt in 1..=KBS_GET_RESOURCE_MAX_ATTEMPT {
+            debug!("KBS client: trying to request KBS, attempt {attempt}");
+
+            let res = self
+                .http_client
+                .get(&remote_url)
+                .send()
+                .await
+                .map_err(|e| Error::HttpError(format!("get failed: {e:?}")))?;
+
+            match res.status() {
+                reqwest::StatusCode::OK => {
+                    let response = res
+                        .json::<Response>()
+                        .await
+                        .map_err(|e| Error::KbsResponseDeserializationFailed(e.to_string()))?;
+                    let payload_data = self
+                        .tee_key
+                        .decrypt_response(response)
+                        .map_err(|e| Error::DecryptResponseFailed(e.to_string()))?;
+                    return Ok(payload_data);
+                }
+                reqwest::StatusCode::UNAUTHORIZED => {
+                    warn!(
+                        "Authenticating with KBS failed. Perform a new RCAR handshake: {:#?}",
+                        res.json::<ErrorInformation>()
+                            .await
+                            .map_err(|e| Error::KbsResponseDeserializationFailed(e.to_string()))?,
+                    );
+                    self.rcar_handshake()
+                        .await
+                        .map_err(|e| Error::RcarHandshake(e.to_string()))?;
+
+                    continue;
+                }
+                reqwest::StatusCode::NOT_FOUND => {
+                    let errorinfo = format!(
+                        "KBS resource Not Found (Error 404): {:#?}",
+                        res.json::<ErrorInformation>()
+                            .await
+                            .map_err(|e| Error::KbsResponseDeserializationFailed(e.to_string()))?
+                    );
+
+                    return Err(Error::ResourceNotFound(errorinfo));
+                }
+                _ => {
+                    let errorinfo = format!(
+                        "KBS Server Internal Failed, Response: {:#?}",
+                        res.json::<ErrorInformation>()
+                            .await
+                            .map_err(|e| Error::KbsResponseDeserializationFailed(e.to_string()))?
+                    );
+
+                    return Err(Error::KbsInternalError(errorinfo));
+                }
+            }
+        }
+
+        Err(Error::UnAuthorized)
+    }
+
     async fn get_resource(&mut self, resource_uri: ResourceUri) -> Result<Vec<u8>> {
         let mut remote_url = format!(
             "{}/{KBS_PREFIX}/resource/{}/{}/{}",
