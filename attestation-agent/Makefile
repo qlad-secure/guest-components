@@ -28,6 +28,9 @@ binary_name ?=
 ATTESTER ?=
 features ?= coco_as,kbs
 OPENSSL ?=
+# Set CRYPTO_BACKEND=rust-crypto to fall back to ring-backed rustls.
+# Default is aws-lc-rs (enables X25519MLKEM768 via prefer-post-quantum).
+CRYPTO_BACKEND ?= aws-lc-rs
 
 ifeq ($(SOURCE_ARCH), ppc64le)
   ARCH=powerpc64le
@@ -99,7 +102,7 @@ endif
 ifdef OPENSSL
     features := $(features),openssl
 else
-    features := $(features),rust-crypto
+    features := $(features),$(CRYPTO_BACKEND)
 endif
 
 ifeq ($(ARCH), $(filter $(ARCH), s390x aarch64))
@@ -136,5 +139,5 @@ clean:
 
 help:
 	@echo "==========================Help========================================="
-	@echo "build: make [DEBUG=1] [LIBC=(musl)] [ARCH=(x86_64/s390x/ppc64le)] [OPENSSL=1] [ATTESTER=all-attesters]"
+	@echo "build: make [DEBUG=1] [LIBC=(musl)] [ARCH=(x86_64/s390x/ppc64le)] [OPENSSL=1] [CRYPTO_BACKEND=aws-lc-rs|rust-crypto] [ATTESTER=all-attesters]"
 	@echo "install: make install [DESTDIR=/path/to/target] [LIBC=(musl)]"

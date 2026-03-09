@@ -42,9 +42,7 @@ clap = { workspace = true, features = ["derive"], optional = true }
 config = { workspace = true, optional = true }
 crypto.path = "../../attestation-agent/deps/crypto"
 env_logger = { workspace = true, optional = true }
-image-rs = { path = "../../image-rs", default-features = false, features = [
-    "kata-cc-rustls-tls",
-] }
+image-rs = { path = "../../image-rs", default-features = false, features = ["kata-cc-aws-lc-rs-tls"] }
 kms = { path = "../kms", default-features = false, features = ["kbs", "mlkem"] }
 log.workspace = true
 prost = { workspace = true, optional = true }
