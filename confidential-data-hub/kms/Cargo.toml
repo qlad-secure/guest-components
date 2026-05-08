@@ -19,7 +19,7 @@ hex = { workspace = true, optional = true }
 kbs_protocol = { path = "../../attestation-agent/kbs_protocol", default-features = false, features = [
     "passport",
     "aa_ttrpc",
-    "openssl",
+    "aws-lc-rs",
     "mlkem",
 ], optional = true }
 p12 = { version = "0.6.3", optional = true }

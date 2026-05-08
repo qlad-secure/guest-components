@@ -3829,6 +3829,7 @@ dependencies = [
  "reqwest 0.13.2",
  "resource_uri",
  "rstest",
+ "rustls",
  "serde",
  "serde_json",
  "serial_test",
