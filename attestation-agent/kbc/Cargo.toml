@@ -19,6 +19,7 @@ serde.workspace = true
 serde_json.workspace = true
 sev = { path = "../deps/sev", optional = true }
 strum.workspace = true
+tracing.workspace = true
 tokio = { workspace = true, features = [
     "macros",
     "rt-multi-thread",
@@ -36,7 +37,7 @@ rstest.workspace = true
 tonic-build = { workspace = true, optional = true }
 
 [features]
-default = ["sample_kbc", "rust-crypto"]
+default = ["sample_kbc", "rust-crypto", "mlkem"]
 
 cc_kbc = ["kbs_protocol/background_check"]
 all-attesters = ["kbs_protocol?/all-attesters"]
@@ -55,6 +56,7 @@ offline_fs_kbc = []
 online_sev_kbc = ["tonic", "sev", "prost", "uuid", "bincode", "tokio"]
 gen-proto = ["tonic-build"]
 
+mlkem = ["crypto/mlkem", "kbs_protocol/mlkem"]
 # Either `rust-crypto` or `openssl` should be enabled to work as underlying crypto module
 rust-crypto = ["crypto/rust-crypto", "kbs_protocol?/rust-crypto"]
 openssl = ["crypto/openssl", "kbs_protocol?/openssl"]

@@ -12,3 +12,5 @@ pub use error::*;
 #[allow(unreachable_code)]
 pub mod plugins;
 pub use plugins::{new_decryptor, new_getter};
+#[cfg(feature = "mlkem_unwrap")]
+pub use plugins::new_decapsulator;

@@ -26,7 +26,7 @@ pub enum Error {
         context: &'static str,
     },
 
-    #[error("decrypt LEK using KEK failed")]
+    #[error("decrypt LEK using KEK failed: {source}")]
     DecryptFailed {
         #[source]
         source: anyhow::Error,

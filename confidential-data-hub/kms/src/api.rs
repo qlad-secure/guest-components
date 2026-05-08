@@ -77,3 +77,10 @@ pub trait Getter: Send + Sync {
     /// `annotations`.
     async fn get_secret(&self, name: &str, annotations: &Annotations) -> Result<Vec<u8>>;
 }
+
+#[async_trait]
+#[cfg(feature = "mlkem_unwrap")]
+pub trait Decapsulator: Send + Sync {
+    /// Decapsulate key. The `encapsulated_ss` will be decapsulated to get the key.
+    async fn decapsulate_key(&self, name: &str, encapsulated_ss: Vec<u8>) -> Result<Vec<u8>>;
+}
