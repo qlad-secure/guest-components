@@ -62,6 +62,12 @@ ASR_BINARY := $(BUILD_DIR)/$(ASR)
 build: $(CDH_BINARY) $(ASR_BINARY) $(AA_BINARY)
 	@echo guest components built for $(TEE_PLATFORM) succeeded!
 
+build-cdh: $(CDH_BINARY)
+	@echo $(CDH) built for $(TEE_PLATFORM) succeeded!
+  
+install-cdh: $(CDH_BINARY)
+	install -D -m0755 $(CDH_BINARY) $(DESTDIR)/$(CDH)
+
 $(CDH_BINARY):
 	@echo build $(CDH) for $(TEE_PLATFORM)
 	cd $(CDH) && $(MAKE) ENABLE_KBS=$(ENABLE_KBS) ARCH=$(ARCH) LIBC=$(LIBC)

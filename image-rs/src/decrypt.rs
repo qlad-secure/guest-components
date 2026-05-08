@@ -25,7 +25,7 @@ pub enum DecryptLayerError {
         source: anyhow::Error,
     },
 
-    #[error("Failed to decrypt the image layer, please ensure that the decryption key is placed and correct")]
+    #[error("Failed to decrypt the image layer, please ensure that the decryption key is placed and correct: {source}")]
     DecryptLayerOptsDataFailed {
         #[source]
         source: anyhow::Error,

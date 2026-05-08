@@ -19,6 +19,7 @@ kbs_protocol = { path = "../../attestation-agent/kbs_protocol", default-features
     "passport",
     "aa_ttrpc",
     "openssl",
+    "mlkem",
 ], optional = true }
 openssl = { workspace = true, optional = true }
 prost = { workspace = true, optional = true }
@@ -64,3 +65,5 @@ aliyun = [
 ]
 aws = ["aws-sdk-kms", "aws-sdk-secretsmanager"]
 kbs = ["kbs_protocol"]
+mlkem = ["crypto/mlkem"]
+mlkem_unwrap = []
