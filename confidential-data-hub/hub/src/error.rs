@@ -22,7 +22,7 @@ pub enum Error {
         source: kms::Error,
     },
 
-    #[error("Decrypt Image (UnwrapKey) failed")]
+    #[error("Decrypt Image (UnwrapKey) failed: {0}")]
     ImageDecryption(#[from] image::Error),
 
     #[error("init Hub failed: {0}")]

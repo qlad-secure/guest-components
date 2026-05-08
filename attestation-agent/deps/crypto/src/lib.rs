@@ -33,3 +33,5 @@ mod asymmetric;
 pub use asymmetric::*;
 
 pub mod rand;
+mod mlkem;
+pub use mlkem::*;

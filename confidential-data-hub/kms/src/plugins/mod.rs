@@ -8,6 +8,8 @@ use std::str::FromStr;
 use strum::{AsRefStr, EnumString};
 
 use crate::{Decrypter, Error, Getter, ProviderSettings, Result};
+#[cfg(feature = "mlkem_unwrap")]
+use crate::Decapsulator;
 
 const _IN_GUEST_DEFAULT_KEY_PATH: &str = "/run/confidential-containers/cdh/kbs/kms-credential";
 
@@ -74,5 +76,18 @@ pub async fn new_getter(
         VaultProvider::Aliyun => Ok(Box::new(
             aliyun::AliyunKmsClient::from_provider_settings(&_provider_settings).await?,
         ) as Box<dyn Getter>),
+    }
+}
+
+#[cfg(feature = "mlkem_unwrap")]
+pub async fn new_decapsulator(
+    provider_name: &str,
+    _provider_settings: ProviderSettings,
+) -> Result<Box<dyn Decapsulator>> {
+    let provider = VaultProvider::from_str(provider_name)
+        .map_err(|_| Error::UnsupportedProvider(provider_name.to_string()))?;
+    match provider {
+        VaultProvider::Kbs => Ok(Box::new(kbs::KbcClient::new().await?) as Box<dyn Decapsulator>),
+        _ => unimplemented!(),
     }
 }
