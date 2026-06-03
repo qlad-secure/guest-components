@@ -117,7 +117,15 @@ impl<T> KbsClientBuilder<T> {
             http_client_builder = http_client_builder.add_root_certificate(cert);
         }
 
-        #[cfg(feature = "rust-crypto")]
+        #[cfg(feature = "aws-lc-rs")]
+        {
+            // make aws-lc-rs as default, which enables prefer-post-quantum (X25519MLKEM768).
+            // a second install attempt is a no-op.
+            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+            http_client_builder = http_client_builder.use_rustls_tls();
+        }
+
+        #[cfg(all(feature = "rust-crypto", not(feature = "aws-lc-rs")))]
         {
             http_client_builder = http_client_builder.use_rustls_tls();
         }

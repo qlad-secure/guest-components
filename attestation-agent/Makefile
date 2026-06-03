@@ -26,6 +26,9 @@ RUSTFLAGS_ARGS ?=
 binary ?=
 binary_name ?=
 OPENSSL ?=
+# Set CRYPTO_BACKEND=rust-crypto to fall back to ring-backed rustls.
+# Default is aws-lc-rs (enables X25519MLKEM768 via prefer-post-quantum).
+CRYPTO_BACKEND ?= aws-lc-rs
 
 ifeq ($(SOURCE_ARCH), ppc64le)
   ARCH=powerpc64le
@@ -56,7 +59,7 @@ endif
 ifdef OPENSSL
     CRYPTO := openssl
 else
-    CRYPTO := rust-crypto
+    CRYPTO := $(CRYPTO_BACKEND)
 endif
 
 ifeq ($(ATTESTER), none)
@@ -152,5 +155,5 @@ clean:
 help:
 	@echo "==========================Help========================================="
 	@echo "build/lint/test share ATTESTER and OPENSSL (ARCH picks the default attester)"
-	@echo "build: make [DEBUG=1] [LIBC=(musl)] [ARCH=(x86_64/s390x/ppc64le)] [OPENSSL=1] [ATTESTER=all-attesters]"
+	@echo "build: make [DEBUG=1] [LIBC=(musl)] [ARCH=(x86_64/s390x/ppc64le)] [OPENSSL=1] [CRYPTO_BACKEND=aws-lc-rs|rust-crypto] [ATTESTER=all-attesters]"
 	@echo "install: make install [DESTDIR=/path/to/target] [LIBC=(musl)]"

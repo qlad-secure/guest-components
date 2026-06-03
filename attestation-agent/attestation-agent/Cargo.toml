@@ -111,7 +111,9 @@ nvidia-dpu-attester = [
     "attester/nvidia-dpu-attester",
 ]
 
-# Either `rust-crypto` or `openssl` should be enabled to work as underlying crypto module
+# Either `aws-lc-rs`, `rust-crypto`, or `openssl` should be enabled as the underlying crypto module.
+# `aws-lc-rs` enables rustls with aws-lc-rs backend and prefer-post-quantum for X25519MLKEM768.
+aws-lc-rs = ["kbs_protocol?/aws-lc-rs"]
 rust-crypto = ["kbs_protocol?/rust-crypto"]
 openssl = ["kbs_protocol?/openssl"]
 

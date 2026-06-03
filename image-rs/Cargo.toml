@@ -92,6 +92,27 @@ kata-cc-rustls-tls = [
     "oci-client/rustls-tls",
     "reqwest?/rustls",
 ]
+# Same as kata-cc-rustls-tls but uses aws-lc-rs as the rustls crypto provider,
+# enabling X25519MLKEM768 for TLS connections.
+kata-cc-aws-lc-rs-tls = [
+    "encryption-ring",
+    "keywrap-ttrpc",
+    "signature-cosign-rustls",
+    "signature-simple",
+    "kbs",
+    "oci-client/rustls-tls",
+    "reqwest?/rustls",
+]
+enclave-cc-cckbc-rustls-tls = [
+    "encryption-ring",
+    "keywrap-native",
+    "signature-simple",
+    "kbs",
+    "signature-cosign-rustls",
+    "oci-client-rustls",
+    "reqwest?/rustls",
+]
+
 # This will be based on `openssl` dependency
 kata-cc-native-tls = [
     "encryption-openssl",

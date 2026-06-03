@@ -23,6 +23,10 @@ reqwest = { workspace = true, default-features = false, features = [
     "cookies",
     "json",
 ] }
+rustls = { version = "0.23", features = [
+    "aws-lc-rs",
+    "prefer-post-quantum",
+], optional = true }
 resource_uri.path = "../deps/resource_uri"
 serde.workspace = true
 serde_json.workspace = true
@@ -89,6 +93,7 @@ mlkem = []
 mlkem_unwrap = []
 
 rust-crypto = ["reqwest/rustls", "crypto/rust-crypto"]
+aws-lc-rs = ["reqwest/rustls", "crypto/openssl", "dep:rustls"]
 openssl = ["reqwest/native-tls-vendored", "crypto/openssl"]
 
 # Experimental Post-Quantum KEM support (ML-KEM-768+A192KW per
