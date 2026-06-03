@@ -4324,6 +4324,7 @@ dependencies = [
  "reqwest 0.13.4",
  "resource_uri",
  "rstest",
+ "rustls",
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
