@@ -174,10 +174,35 @@ impl Kbc for OnlineSevKbc {
         }
     }
 
-    #[cfg(feature = "mlkem_unwrap")]
-    async fn decapsulate_key(&mut self, _rid: ResourceUri, _encapsulated_ss: Vec<u8>) -> Result<Vec<u8>> {
+    #[cfg(feature = "kms_unwrap")]
+    async fn decrypt_with_kms(
+        &mut self,
+        _rid: ResourceUri,
+        _ciphertext: Vec<u8>,
+        _annotations: &crate::Annotations,
+    ) -> Result<Vec<u8>> {
         Err(Error::KbsClientError(
-            "offline-fs-kbc: ML-KEM decapsulation not supported".to_string()
+            "online-sev-kbc: KMS asymmetric decryption is only supported with cc_kbc".to_string()
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use resource_uri::ResourceUri;
+
+    use crate::plugins::kbs::{sev::OnlineSevKbc, Kbc};
+
+    #[cfg(feature = "kms_unwrap")]
+    #[tokio::test]
+    async fn test_decrypt_with_kms_unsupported() {
+        let mut kbc = OnlineSevKbc {};
+
+        let rid = ResourceUri::try_from("kbs:///default/key/1").unwrap();
+        let err = kbc
+            .decrypt_with_kms(rid, vec![], &crate::Annotations::new())
+            .await
+            .expect_err("decrypt_with_kms should be unsupported");
+        assert!(err.to_string().contains("only supported with cc_kbc"));
     }
 }

@@ -1,12 +1,12 @@
 use anyhow::{anyhow, bail, Result};
 use base64::Engine;
-use hkdf::Hkdf;
-use tracing::debug;
 use getrandom::{rand_core::UnwrapErr, SysRng};
+use hkdf::Hkdf;
 use ml_kem::array::Array;
 use ml_kem::kem::{Decapsulate, Encapsulate, EncapsulationKey, FromSeed, Kem};
 use ml_kem::{DecapsulationKey, MlKem1024, MlKem768, Seed};
 use sha2::Sha256;
+use tracing::debug;
 
 /// MLKEM variant specification
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +28,7 @@ pub fn mlkem_encrypt(key: &[u8], data: &[u8], iv: &[u8], variant: Variant) -> Re
     debug!("Encrypting data with MLKEMKeyPair, variant: {:?}", variant);
 
     let sk = base64::engine::general_purpose::STANDARD
-        .decode(&key)
+        .decode(key)
         .map_err(|e| anyhow!("Failed to decode mlkem key: {:?}", e))?;
 
     let sk_encoded = base64::engine::general_purpose::STANDARD.encode(&sk);
@@ -50,13 +50,13 @@ pub fn mlkem_encrypt(key: &[u8], data: &[u8], iv: &[u8], variant: Variant) -> Re
         Variant::Mlkem768 => b"MLKEM768-A256GCM",
         Variant::Mlkem1024 => b"MLKEM1024-A256GCM",
     };
-    let hkdf = Hkdf::<Sha256>::new(None, &ss);
+    let hkdf = Hkdf::<Sha256>::new(None, ss.as_slice());
     let mut derived_key = vec![0u8; 32];
     hkdf.expand(derive_info, &mut derived_key)
         .map_err(|e| anyhow!("HKDF expansion failed: {:?}", e))?;
 
     debug!("Encrypting with derived key");
-    let wrapped_data = aes256gcm::encrypt(&derived_key, &data, &iv)
+    let wrapped_data = aes256gcm::encrypt(derived_key.as_slice(), data, iv)
         .map_err(|e| anyhow!("AES encryption failed: {:?}", e))?;
 
     let wrapped_data_b64 = base64::engine::general_purpose::STANDARD.encode(&wrapped_data);
@@ -81,14 +81,14 @@ pub fn mlkem_decrypt(
 
     let shared_secret = match variant {
         Variant::Mlkem768 => {
-            let key_pair = MLKEMKeyPair768::from_secret_key(&String::from_utf8_lossy(&key))
+            let key_pair = MLKEMKeyPair768::from_secret_key(String::from_utf8_lossy(key).as_ref())
                 .map_err(|e| anyhow!("Failed to create MLKEMKeyPair: {:?}", e))?;
             key_pair
                 .decapsulate(encapsulated_ss.as_slice())
                 .map_err(|e| anyhow!("Key decapsulation failed: {:?}", e))?
         }
         Variant::Mlkem1024 => {
-            let key_pair = MLKEMKeyPair1024::from_secret_key(&String::from_utf8_lossy(&key))
+            let key_pair = MLKEMKeyPair1024::from_secret_key(String::from_utf8_lossy(key).as_ref())
                 .map_err(|e| anyhow!("Failed to create MLKEMKeyPair: {:?}", e))?;
             key_pair
                 .decapsulate(encapsulated_ss.as_slice())
@@ -101,13 +101,13 @@ pub fn mlkem_decrypt(
         Variant::Mlkem768 => b"MLKEM768-A256GCM",
         Variant::Mlkem1024 => b"MLKEM1024-A256GCM",
     };
-    let hkdf = Hkdf::<Sha256>::new(None, &shared_secret);
+    let hkdf = Hkdf::<Sha256>::new(None, shared_secret.as_slice());
     let mut derived_key = vec![0u8; 32];
     hkdf.expand(derive_info, &mut derived_key)
         .map_err(|e| anyhow!("HKDF expansion failed: {:?}", e))?;
 
     debug!("Decrypting with derived key");
-    aes256gcm::decrypt(&derived_key, &wrapped_data, &iv)
+    aes256gcm::decrypt(derived_key.as_slice(), wrapped_data.as_slice(), iv)
 }
 
 pub fn parse_encapsulated_ss(wrapped_data: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
@@ -135,6 +135,12 @@ macro_rules! define_mlkem_keypair {
         pub struct $name {
             decapsulation_key: Option<DecapsulationKey<$params>>,
             encapsulation_key: Option<EncapsulationKey<$params>>,
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self::new()
+            }
         }
 
         impl $name {
@@ -266,8 +272,8 @@ pub type MLKEMKeyPair = MLKEMKeyPair768;
 
 #[cfg(test)]
 mod tests {
-    use rstest::rstest;
     use base64::Engine;
+    use rstest::rstest;
 
     use crate::{mlkem_decrypt, mlkem_encrypt, MLKEMKeyPair1024, MLKEMKeyPair768, Variant};
 
@@ -321,7 +327,8 @@ mod tests {
             .decode(wrapped_data_64)
             .expect("failed to decode wrapped data");
 
-        let plaintext_de = mlkem_decrypt(key, &wrapped_data, &iv, Variant::Mlkem768).expect("decryption failed");
+        let plaintext_de =
+            mlkem_decrypt(key, &wrapped_data, &iv, Variant::Mlkem768).expect("decryption failed");
         assert_eq!(plaintext, plaintext_de);
     }
 }

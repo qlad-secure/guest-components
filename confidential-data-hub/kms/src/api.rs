@@ -79,8 +79,17 @@ pub trait Getter: Send + Sync {
 }
 
 #[async_trait]
-#[cfg(feature = "mlkem_unwrap")]
-pub trait Decapsulator: Send + Sync {
-    /// Decapsulate key. The `encapsulated_ss` will be decapsulated to get the key.
-    async fn decapsulate_key(&self, name: &str, encapsulated_ss: Vec<u8>) -> Result<Vec<u8>>;
+#[cfg(feature = "kms_unwrap")]
+pub trait KmsDecrypter: Send + Sync {
+    /// Decrypt a ciphertext that was produced by a cloud KMS asymmetric key.
+    ///
+    /// `name` is the KBS resource URI that identifies the key.
+    /// `ciphertext` is the KMS-specific encrypted payload.
+    /// `annotations` may carry provider-specific hints.
+    async fn decrypt(
+        &self,
+        name: &str,
+        ciphertext: Vec<u8>,
+        annotations: &Annotations,
+    ) -> Result<Vec<u8>>;
 }
