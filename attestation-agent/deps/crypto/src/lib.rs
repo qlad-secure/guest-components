@@ -35,3 +35,8 @@ pub use asymmetric::*;
 pub mod rand;
 mod mlkem;
 pub use mlkem::*;
+
+#[cfg(feature = "kms_unwrap")]
+mod kms_unwrap;
+#[cfg(feature = "kms_unwrap")]
+pub use kms_unwrap::*;

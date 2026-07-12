@@ -36,10 +36,15 @@ impl Kbc for OfflineFsKbc {
             .cloned()
     }
 
-    #[cfg(feature = "mlkem_unwrap")]
-    async fn decapsulate_key(&mut self, _rid: ResourceUri, _encapsulated_ss: Vec<u8>) -> Result<Vec<u8>> {
+    #[cfg(feature = "kms_unwrap")]
+    async fn decrypt_with_kms(
+        &mut self,
+        _rid: ResourceUri,
+        _ciphertext: Vec<u8>,
+        _annotations: &crate::Annotations,
+    ) -> Result<Vec<u8>> {
         Err(Error::KbsClientError(
-            "offline-fs-kbc: ML-KEM decapsulation not supported".to_string()
+            "offline-fs-kbc: KMS asymmetric decryption is only supported with cc_kbc".to_string()
         ))
     }
 }
@@ -107,5 +112,20 @@ mod tests {
             kbc.get_resource(rid).await.expect("get key failed")[..],
             *value
         );
+    }
+
+    #[cfg(feature = "kms_unwrap")]
+    #[tokio::test]
+    async fn test_decrypt_with_kms_unsupported() {
+        let mut kbc = OfflineFsKbc {
+            resources: Default::default(),
+        };
+
+        let rid = ResourceUri::try_from("kbs:///default/key/1").unwrap();
+        let err = kbc
+            .decrypt_with_kms(rid, vec![], &crate::Annotations::new())
+            .await
+            .expect_err("decrypt_with_kms should be unsupported");
+        assert!(err.to_string().contains("only supported with cc_kbc"));
     }
 }

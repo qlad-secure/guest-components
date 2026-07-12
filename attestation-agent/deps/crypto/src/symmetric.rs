@@ -47,6 +47,12 @@ pub enum WrapType {
     #[serde(rename = "MLKEM1024-A256GCM")]
     #[cfg(feature = "mlkem")]
     Mlkem1024Aes256Gcm,
+
+    /// symmetric key is encrypted with a cloud KMS asymmetric key
+    #[strum(serialize = "KMS-A256GCM")]
+    #[serde(rename = "KMS-A256GCM")]
+    #[cfg(feature = "kms_unwrap")]
+    KmsAes256Gcm,
 }
 
 /// Decrypt the given `ciphertext`.
@@ -66,6 +72,10 @@ pub fn decrypt(
         WrapType::Mlkem768Aes256Gcm => mlkem_decrypt(&key, &ciphertext, &iv, Variant::Mlkem768),
         #[cfg(feature = "mlkem")]
         WrapType::Mlkem1024Aes256Gcm => mlkem_decrypt(&key, &ciphertext, &iv, Variant::Mlkem1024),
+        #[cfg(feature = "kms_unwrap")]
+        WrapType::KmsAes256Gcm => {
+            bail!("KMS-asymmetric wrap type must be unwrapped by KBS before calling decrypt()")
+        }
     }
 }
 
@@ -103,6 +113,10 @@ pub fn encrypt(
         WrapType::Mlkem768Aes256Gcm => mlkem_encrypt(&key, &plaintext, &iv, Variant::Mlkem768),
         #[cfg(feature = "mlkem")]
         WrapType::Mlkem1024Aes256Gcm => mlkem_encrypt(&key, &plaintext, &iv, Variant::Mlkem1024),
+        #[cfg(feature = "kms_unwrap")]
+        WrapType::KmsAes256Gcm => {
+            bail!("KMS-asymmetric wrap type is not supported for local encryption")
+        }
     }
 }
 
