@@ -66,4 +66,4 @@ aliyun = [
 aws = ["aws-sdk-kms", "aws-sdk-secretsmanager"]
 kbs = ["kbs_protocol"]
 mlkem = ["crypto/mlkem"]
-mlkem_unwrap = []
+kms_unwrap = ["kbs_protocol/kms_unwrap", "crypto/kms_unwrap"]

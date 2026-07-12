@@ -18,14 +18,19 @@ pub use resource_uri::ResourceUri;
 use tokio::sync::Mutex;
 
 use crate::{Annotations, Error, Getter, Result};
-#[cfg(feature = "mlkem_unwrap")]
-use crate::Decapsulator;
+#[cfg(feature = "kms_unwrap")]
+use crate::KmsDecrypter;
 
 #[async_trait]
 pub trait Kbc: Send + Sync {
     async fn get_resource(&mut self, _rid: ResourceUri) -> Result<Vec<u8>>;
-    #[cfg(feature = "mlkem_unwrap")]
-    async fn decapsulate_key(&mut self, _rid: ResourceUri, _encapsulated_ss: Vec<u8>) -> Result<Vec<u8>>;
+    #[cfg(feature = "kms_unwrap")]
+    async fn decrypt_with_kms(
+        &mut self,
+        _rid: ResourceUri,
+        _ciphertext: Vec<u8>,
+        _annotations: &Annotations,
+    ) -> Result<Vec<u8>>;
 }
 
 /// A fake KbcClient to carry the [`Getter`] semantics. The real `new()`
@@ -79,9 +84,14 @@ impl Getter for KbcClient {
 }
 
 #[async_trait]
-#[cfg(all(feature = "mlkem_unwrap"))]
-impl Decapsulator for KbcClient {
-    async fn decapsulate_key(&self, name: &str, encapsulated_ss: Vec<u8>) -> Result<Vec<u8>> {
+#[cfg(feature = "kms_unwrap")]
+impl KmsDecrypter for KbcClient {
+    async fn decrypt(
+        &self,
+        name: &str,
+        ciphertext: Vec<u8>,
+        annotations: &Annotations,
+    ) -> Result<Vec<u8>> {
         let resource_uri = ResourceUri::try_from(name)
             .map_err(|_| Error::KbsClientError(format!("illegal kbs resource uri: {name}")))?;
         let real_client = KBS_CLIENT.clone();
@@ -95,9 +105,13 @@ impl Decapsulator for KbcClient {
         let client = client.as_mut().expect("must be initialized");
 
         match client {
-            #[cfg(all(feature = "kbs"))]
-            RealClient::Cc(c) => c.decapsulate_key(resource_uri, encapsulated_ss).await,
-            _ => unimplemented!(),
+            #[cfg(feature = "kbs")]
+            RealClient::Cc(c) => c.decrypt_with_kms(resource_uri, ciphertext, annotations).await,
+            #[cfg(feature = "sev")]
+            RealClient::Sev(c) => c.decrypt_with_kms(resource_uri, ciphertext, annotations).await,
+            RealClient::OfflineFs(c) => {
+                c.decrypt_with_kms(resource_uri, ciphertext, annotations).await
+            }
         }
     }
 }

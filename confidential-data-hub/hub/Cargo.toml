@@ -51,7 +51,7 @@ jose-b64 = "0.1.2"
 jose-jwa = "0.1.2"
 jose-jwk = "0.1.2"
 jose-jws = "0.1.2"
-kms = { path = "../kms", default-features = false, features = ["kbs", "mlkem"] }
+kms = { path = "../kms", default-features = false, features = ["kbs", "mlkem", "kms_unwrap"] }
 libcryptsetup-rs = { version = "0.13.1", optional = true, features = ["mutex"] }
 nix.workspace = true
 p256 = "0.13.2"
@@ -106,7 +106,7 @@ kbs = ["kms/kbs"]
 
 mlkem = ["crypto/mlkem"]
 
-mlkem_unwrap = []
+kms_unwrap = ["kms/kms_unwrap", "crypto/kms_unwrap"]
 
 # Binary RPC type
 bin = ["clap", "shadow-rs", "tracing-subscriber"]

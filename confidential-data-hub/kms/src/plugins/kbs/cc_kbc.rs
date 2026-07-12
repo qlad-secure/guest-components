@@ -63,17 +63,22 @@ impl Kbc for CcKbc {
         Ok(secret)
     }
 
-    #[cfg(feature = "mlkem_unwrap")]
-    async fn decapsulate_key(
+    #[cfg(feature = "kms_unwrap")]
+    async fn decrypt_with_kms(
         &mut self,
         rid: ResourceUri,
-        encapsulated_ss: Vec<u8>,
+        ciphertext: Vec<u8>,
+        annotations: &crate::Annotations,
     ) -> Result<Vec<u8>> {
+        let provider = annotations
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or("aws");
         let secret = self
             .client
-            .decapsulate_key(rid, encapsulated_ss)
+            .decrypt_with_kms(rid, ciphertext, provider)
             .await
-            .map_err(|e| Error::KbsClientError(format!("decapsulate key failed: {e:?}")))?;
+            .map_err(|e| Error::KbsClientError(format!("decrypt with kms failed: {e:?}")))?;
         Ok(secret)
     }
 }

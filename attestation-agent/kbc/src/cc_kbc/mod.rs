@@ -4,7 +4,7 @@
 //
 
 use crate::{KbcCheckInfo, KbcInterface};
-use crypto::{decrypt, parse_encapsulated_ss, WrapType};
+use crypto::{decrypt, parse_kms_ciphertext, WrapType};
 use kbs_protocol::{
     KbsClientBuilder, KbsClientCapabilities,
     client::KbsClient,
@@ -30,19 +30,19 @@ impl KbcInterface for Kbc {
 
         debug!("fetching key from KBS");
         let (key_data, annotation_packet) = match wrap_type {
-            #[cfg(feature = "mlkem")]
-            WrapType::Mlkem768Aes256Gcm => {
-                debug!("ML-KEM wrap type detected, calling kbs to unwrap key");
+            #[cfg(feature = "kms_unwrap")]
+            WrapType::KmsAes256Gcm => {
+                debug!("KMS wrap type detected, calling kbs to unwrap key");
 
-                let (wrapped_data, encapsulated_ss) = parse_encapsulated_ss(
+                let (provider, wrapped_data, kms_ciphertext) = parse_kms_ciphertext(
                     &base64::engine::general_purpose::STANDARD.decode(ap.wrapped_data)?,
                 )?;
 
                 let key_data = self
                     .kbs_client
-                    .decapsulate_key(ap.kid.clone(), encapsulated_ss)
+                    .decrypt_with_kms(ap.kid.clone(), kms_ciphertext, &provider)
                     .await
-                    .context("Failed to decapsulate key from KBS")?;
+                    .context("Failed to decrypt key with KMS via KBS")?;
 
                 wrap_type = WrapType::Aes256Gcm;
 

@@ -7,6 +7,8 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use async_trait::async_trait;
+#[cfg(feature = "kms_unwrap")]
+use base64::Engine;
 use kbs_types::HashAlgorithm;
 use kbs_types::{
     Attestation, Challenge, CompositeEvidence, ErrorInformation, InitData, Request, Response,
@@ -334,30 +336,37 @@ impl KbsClient<Box<dyn EvidenceProvider>> {
 
 #[async_trait]
 impl KbsClientCapabilities for KbsClient<Box<dyn EvidenceProvider>> {
-    #[cfg(feature = "mlkem_unwrap")]
-    async fn decapsulate_key(
+    #[cfg(feature = "kms_unwrap")]
+    async fn decrypt_with_kms(
         &mut self,
         resource_uri: ResourceUri,
-        encapsulated_ss: Vec<u8>,
+        ciphertext: Vec<u8>,
+        provider: &str,
     ) -> Result<Vec<u8>> {
         let remote_url = format!(
-            "{}/{KBS_PREFIX}/mlkem/decapsulate/{}/{}/{}?encapsulated_ss={}",
+            "{}/{KBS_PREFIX}/external/kms-decrypt/{}/{}/{}/{}",
             self.kbs_host_url,
+            provider,
             resource_uri.repository,
             resource_uri.r#type,
-            resource_uri.tag,
-            base64::engine::general_purpose::URL_SAFE.encode(encapsulated_ss.clone())
+            resource_uri.tag
         );
+
+        let body = serde_json::json!({
+            "key_id": resource_uri.tag,
+            "ciphertext": base64::engine::general_purpose::STANDARD.encode(&ciphertext),
+        });
 
         for attempt in 1..=KBS_GET_RESOURCE_MAX_ATTEMPT {
             debug!("KBS client: trying to request KBS, attempt {attempt}");
 
             let res = self
                 .http_client
-                .get(&remote_url)
+                .post(&remote_url)
+                .json(&body)
                 .send()
                 .await
-                .map_err(|e| Error::HttpError(format!("get failed: {e:?}")))?;
+                .map_err(|e| Error::HttpError(format!("post failed: {e:?}")))?;
 
             match res.status() {
                 reqwest::StatusCode::OK => {

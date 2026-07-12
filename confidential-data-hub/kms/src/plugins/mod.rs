@@ -8,8 +8,8 @@ use std::str::FromStr;
 use strum::{AsRefStr, EnumString};
 
 use crate::{Decrypter, Error, Getter, ProviderSettings, Result};
-#[cfg(feature = "mlkem_unwrap")]
-use crate::Decapsulator;
+#[cfg(feature = "kms_unwrap")]
+use crate::KmsDecrypter;
 
 const _IN_GUEST_DEFAULT_KEY_PATH: &str = "/run/confidential-containers/cdh/kbs/kms-credential";
 
@@ -88,15 +88,17 @@ pub async fn new_getter(
     }
 }
 
-#[cfg(feature = "mlkem_unwrap")]
-pub async fn new_decapsulator(
+#[cfg(feature = "kms_unwrap")]
+#[allow(unreachable_patterns)] // only Kbs is supported as a KMS decrypter today
+/// Create a new [`KmsDecrypter`] backed by KBS.
+pub async fn new_kms_decrypter(
     provider_name: &str,
     _provider_settings: ProviderSettings,
-) -> Result<Box<dyn Decapsulator>> {
+) -> Result<Box<dyn KmsDecrypter>> {
     let provider = VaultProvider::from_str(provider_name)
         .map_err(|_| Error::UnsupportedProvider(provider_name.to_string()))?;
     match provider {
-        VaultProvider::Kbs => Ok(Box::new(kbs::KbcClient::new().await?) as Box<dyn Decapsulator>),
+        VaultProvider::Kbs => Ok(Box::new(kbs::KbcClient::new().await?) as Box<dyn KmsDecrypter>),
         _ => unimplemented!(),
     }
 }

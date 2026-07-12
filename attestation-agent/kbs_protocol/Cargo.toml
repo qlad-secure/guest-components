@@ -90,7 +90,7 @@ tpm-attester = ["attester/tpm-attester"]
 nvidia-attester = ["attester/nvidia-attester"]
 nvidia-dpu-attester = ["attester/nvidia-dpu-attester"]
 mlkem = []
-mlkem_unwrap = []
+kms_unwrap = []
 
 rust-crypto = ["reqwest/rustls", "crypto/rust-crypto"]
 aws-lc-rs = ["reqwest/rustls", "crypto/openssl", "dep:rustls"]
