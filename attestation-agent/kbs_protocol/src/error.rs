@@ -48,6 +48,9 @@ pub enum Error {
     #[error("request unauthorized")]
     UnAuthorized,
 
+    #[error("invalid resource uri: {0}")]
+    InvalidResourceUri(String),
+
     #[error("invalid hash algorithm: {0}")]
     InvalidHashAlgorithm(String),
 
