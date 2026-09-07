@@ -18,7 +18,8 @@ pub struct AnnotationPacket {
     pub kid: ResourceUri,
     // Encrypted key to unwrap (base64-encoded)
     pub wrapped_data: String,
-    // Initialisation vector (base64-encoded)
+    // Initialisation vector (base64-encoded). Empty for KMS wrap type.
+    #[serde(default)]
     pub iv: String,
     // Wrap type to specify encryption algorithm and mode
     pub wrap_type: String,

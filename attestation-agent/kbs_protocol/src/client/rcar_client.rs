@@ -14,7 +14,9 @@ use kbs_types::{
     Attestation, Challenge, CompositeEvidence, ErrorInformation, InitData, Request, Response,
     RuntimeData, Tee,
 };
-use resource_uri::{ResourcePluginPath, ResourceUri};
+#[cfg(feature = "kms_unwrap")]
+use resource_uri::ResourcePluginPath;
+use resource_uri::ResourceUri;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{debug, warn};
@@ -339,11 +341,7 @@ impl KbsClientCapabilities for KbsClient<Box<dyn EvidenceProvider>> {
 
         let remote_url = format!(
             "{}/{KBS_PREFIX}/external/kms-decrypt/{}/{}/{}/{}",
-            self.kbs_host_url,
-            provider,
-            repo,
-            r#type,
-            tag
+            self.kbs_host_url, provider, repo, r#type, tag
         );
 
         let body = serde_json::json!({

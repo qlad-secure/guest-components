@@ -19,7 +19,8 @@ pub struct AnnotationPacket {
     pub kid: ResourceUri,
     // Encrypted key to unwrap (base64-encoded)
     pub wrapped_data: String,
-    // Initialisation vector (base64-encoded)
+    // Initialisation vector (base64-encoded). Empty for KMS wrap type.
+    #[serde(default)]
     pub iv: String,
     // Wrap type to specify encryption algorithm and mode
     pub wrap_type: String,
@@ -33,77 +34,67 @@ impl AnnotationPacket {
         use crypto::WrapType;
         use kms::{plugins::VaultProvider, Annotations, ProviderSettings};
 
-        #[cfg_attr(not(feature = "kms_unwrap"), allow(unused_mut))]
-        let mut wrap_type = WrapType::try_from(&self.wrap_type[..])
+        let wrap_type = WrapType::try_from(&self.wrap_type[..])
             .map_err(|_| Error::UnknownWrapType(self.wrap_type.to_string()))?;
+        let name = self.kid.whole_uri();
+
+        #[cfg(feature = "kms_unwrap")]
+        if wrap_type == WrapType::KmsDirect {
+            let (provider, kms_ciphertext) =
+                parse_kms_ciphertext(&STANDARD.decode(&self.wrapped_data).map_err(|e| {
+                    Error::Base64DecodeFailed {
+                        context: "decode `wrapped_data` for KMS unwrap",
+                        source: e,
+                    }
+                })?)
+                .map_err(|e| Error::DecryptFailed { source: e })?;
+
+            let mut annotations = Annotations::default();
+            annotations.insert("provider".to_string(), serde_json::Value::String(provider));
+
+            let kms_client =
+                kms::new_kms_decrypter(VaultProvider::Kbs.as_ref(), ProviderSettings::default())
+                    .await
+                    .map_err(|e| Error::KmsError {
+                        context: "create KBC failed",
+                        source: e,
+                    })?;
+
+            // KMS decrypts the ciphertext directly to the layer key options
+            return kms_client
+                .decrypt(&name, kms_ciphertext, &annotations)
+                .await
+                .map_err(|e| Error::KmsError {
+                    context: "KMS decryption failed",
+                    source: e,
+                });
+        }
+
         let kbs_client = kms::new_getter(VaultProvider::Kbs.as_ref(), ProviderSettings::default())
             .await
             .map_err(|e| Error::KmsError {
                 context: "create KBC failed",
                 source: e,
             })?;
-        let name = self.kid.whole_uri();
 
-        let (kek, wrapped_data, iv) = match wrap_type {
-            #[cfg(feature = "kms_unwrap")]
-            WrapType::KmsAes256Gcm => {
-                let (provider, parsed_wrapped_data, kms_ciphertext) =
-                    parse_kms_ciphertext(&STANDARD.decode(&self.wrapped_data).map_err(|e| {
-                        Error::Base64DecodeFailed {
-                            context: "decode `wrapped_data` for KMS unwrap",
-                            source: e,
-                        }
-                    })?)
-                    .map_err(|e| Error::DecryptFailed { source: e })?;
-
-                let mut annotations = Annotations::default();
-                annotations.insert("provider".to_string(), serde_json::Value::String(provider));
-
-                let kms_client = kms::new_kms_decrypter(
-                    VaultProvider::Kbs.as_ref(),
-                    ProviderSettings::default(),
-                )
-                .await
-                .map_err(|e| Error::KmsError {
-                    context: "create KBC failed",
-                    source: e,
-                })?;
-
-                let kek = kms_client
-                    .decrypt(&name, kms_ciphertext, &annotations)
-                    .await
-                    .map_err(|e| Error::KmsError {
-                        context: "KMS decryption failed",
-                        source: e,
-                    })?;
-
-                wrap_type = WrapType::Aes256Gcm;
-
-                (kek, STANDARD.encode(parsed_wrapped_data), self.iv.clone())
-            }
-            _ => {
-                let kek = kbs_client
-                    .get_secret(&name, &Annotations::default())
-                    .await
-                    .map_err(|e| Error::KmsError {
-                        context: "get KEK failed",
-                        source: e,
-                    })?;
-
-                (kek, self.wrapped_data.clone(), self.iv.clone())
-            }
-        };
+        let kek = kbs_client
+            .get_secret(&name, &Annotations::default())
+            .await
+            .map_err(|e| Error::KmsError {
+                context: "get KEK failed",
+                source: e,
+            })?;
 
         let lek = crypto::decrypt(
             kek.into(),
             STANDARD
-                .decode(&wrapped_data)
+                .decode(&self.wrapped_data)
                 .map_err(|e| Error::Base64DecodeFailed {
                     context: "decode `wrapped_data`",
                     source: e,
                 })?,
             STANDARD
-                .decode(&iv)
+                .decode(&self.iv)
                 .map_err(|e| Error::Base64DecodeFailed {
                     context: "decode `iv`",
                     source: e,
