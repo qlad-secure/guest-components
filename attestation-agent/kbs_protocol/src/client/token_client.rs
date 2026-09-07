@@ -7,7 +7,9 @@ use async_trait::async_trait;
 #[cfg(feature = "kms_unwrap")]
 use base64::Engine;
 use kbs_types::{ErrorInformation, Response};
-use resource_uri::{ResourcePluginPath, ResourceUri};
+#[cfg(feature = "kms_unwrap")]
+use resource_uri::ResourcePluginPath;
+use resource_uri::ResourceUri;
 use tracing::{debug, warn};
 
 use crate::{
@@ -45,11 +47,7 @@ impl KbsClientCapabilities for KbsClient<Box<dyn TokenProvider>> {
 
         let remote_url = format!(
             "{}/{KBS_PREFIX}/external/kms-decrypt/{}/{}/{}/{}",
-            self.kbs_host_url,
-            provider,
-            repo,
-            r#type,
-            tag
+            self.kbs_host_url, provider, repo, r#type, tag
         );
 
         let body = serde_json::json!({

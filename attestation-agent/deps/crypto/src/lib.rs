@@ -32,8 +32,8 @@ pub use symmetric::*;
 mod asymmetric;
 pub use asymmetric::*;
 
-pub mod rand;
 mod mlkem;
+pub mod rand;
 pub use mlkem::*;
 
 #[cfg(feature = "kms_unwrap")]

@@ -26,42 +26,27 @@ pub struct Kbc {
 #[async_trait]
 impl KbcInterface for Kbc {
     async fn decrypt_payload(&mut self, ap: AnnotationPacket) -> Result<Vec<u8>> {
-        let mut wrap_type = WrapType::try_from(&ap.wrap_type[..])?;
+        let wrap_type = WrapType::try_from(&ap.wrap_type[..])?;
 
         debug!("fetching key from KBS");
-        let (key_data, annotation_packet) = match wrap_type {
-            #[cfg(feature = "kms_unwrap")]
-            WrapType::KmsAes256Gcm => {
-                debug!("KMS wrap type detected, calling kbs to unwrap key");
 
-                let (provider, wrapped_data, kms_ciphertext) = parse_kms_ciphertext(
-                    &base64::engine::general_purpose::STANDARD.decode(ap.wrapped_data)?,
-                )?;
+        #[cfg(feature = "kms_unwrap")]
+        if wrap_type == WrapType::KmsDirect {
+            debug!("KMS wrap type detected, calling kbs to decrypt layer key options");
 
-                let key_data = self
-                    .kbs_client
-                    .decrypt_with_kms(ap.kid.clone(), kms_ciphertext, &provider)
-                    .await
-                    .context("Failed to decrypt key with KMS via KBS")?;
+            let (provider, kms_ciphertext) = parse_kms_ciphertext(
+                &base64::engine::general_purpose::STANDARD.decode(ap.wrapped_data)?,
+            )?;
 
-                wrap_type = WrapType::Aes256Gcm;
+            // KMS decrypts the ciphertext directly to the layer key options
+            return self
+                .kbs_client
+                .decrypt_with_kms(ap.kid.clone(), kms_ciphertext, &provider)
+                .await
+                .context("Failed to decrypt layer key options with KMS via KBS");
+        }
 
-                (
-                    key_data,
-                    AnnotationPacket {
-                        kid: ap.kid,
-                        wrapped_data: base64::engine::general_purpose::STANDARD
-                            .encode(wrapped_data),
-                        iv: ap.iv.clone(),
-                        wrap_type: WrapType::Aes256Gcm.as_ref().to_string(),
-                    },
-                )
-            }
-            _ => {
-                let key_data = self.kbs_client.get_resource(ap.kid.clone()).await?;
-                (key_data, ap)
-            }
-        };
+        let key_data = self.kbs_client.get_resource(ap.kid.clone()).await?;
         debug!("key data fetched from KBS");
 
         let key = Zeroizing::new(key_data);
@@ -70,8 +55,8 @@ impl KbcInterface for Kbc {
         debug!("parsed wrap type: {:?}", wrap_type);
         decrypt(
             key,
-            base64::engine::general_purpose::STANDARD.decode(annotation_packet.wrapped_data)?,
-            base64::engine::general_purpose::STANDARD.decode(annotation_packet.iv)?,
+            base64::engine::general_purpose::STANDARD.decode(ap.wrapped_data)?,
+            base64::engine::general_purpose::STANDARD.decode(ap.iv)?,
             wrap_type,
         )
     }

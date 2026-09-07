@@ -77,17 +77,20 @@ impl TryInto<super::v1::AnnotationPacket> for AnnotationPacketV2 {
             });
         }
 
-        if self.wrap_type.is_none() {
-            return Err(Error::ParseAnnotationPacket {
-                source: anyhow!("no `WrapType` given."),
-            });
-        }
+        let wrap_type = self.wrap_type.clone().ok_or(Error::ParseAnnotationPacket {
+            source: anyhow!("no `WrapType` given."),
+        })?;
 
-        if self.iv.is_none() {
-            return Err(Error::ParseAnnotationPacket {
-                source: anyhow!("no `iv` given."),
-            });
-        }
+        // KMS packets carry no iv, the ciphertext decrypts directly
+        let iv = match self.iv {
+            Some(iv) => iv,
+            None if wrap_type == "KMS-DIRECT" => String::new(),
+            None => {
+                return Err(Error::ParseAnnotationPacket {
+                    source: anyhow!("no `iv` given."),
+                })
+            }
+        };
 
         let kid = resource_uri::ResourceUri::try_from(&self.kid[..]).map_err(|e| {
             Error::ParseAnnotationPacket {
@@ -98,8 +101,8 @@ impl TryInto<super::v1::AnnotationPacket> for AnnotationPacketV2 {
         let annotation_packet = super::v1::AnnotationPacket {
             kid,
             wrapped_data: self.wrapped_data,
-            iv: self.iv.expect("must have `iv`"),
-            wrap_type: self.wrap_type.expect("must have `wrap_type`"),
+            iv,
+            wrap_type,
         };
 
         Ok(annotation_packet)
