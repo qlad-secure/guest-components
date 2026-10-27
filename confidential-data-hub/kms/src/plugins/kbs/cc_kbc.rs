@@ -62,23 +62,4 @@ impl Kbc for CcKbc {
             .map_err(|e| Error::KbsClientError(format!("get resource failed: {e:?}")))?;
         Ok(secret)
     }
-
-    #[cfg(feature = "kms_unwrap")]
-    async fn decrypt_with_kms(
-        &mut self,
-        rid: ResourceUri,
-        ciphertext: Vec<u8>,
-        annotations: &crate::Annotations,
-    ) -> Result<Vec<u8>> {
-        let provider = annotations
-            .get("provider")
-            .and_then(|v| v.as_str())
-            .unwrap_or("aws");
-        let secret = self
-            .client
-            .decrypt_with_kms(rid, ciphertext, provider)
-            .await
-            .map_err(|e| Error::KbsClientError(format!("decrypt with kms failed: {e:?}")))?;
-        Ok(secret)
-    }
 }

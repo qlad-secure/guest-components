@@ -4,7 +4,7 @@
 //! where provider is one of `aws`, `azure`, or `gcp`. The KMS ciphertext
 //! decrypts directly to the layer key options.
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use base64::Engine;
 
 /// Split a KMS payload into `(provider, kms_ciphertext)`.

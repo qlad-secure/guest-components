@@ -26,7 +26,7 @@ rstest.workspace = true
 [build-dependencies]
 
 [features]
-default = ["rust-crypto", "kms_unwrap"]
+default = ["rust-crypto"]
 
 cc_kbc = ["kbs_protocol/background_check"]
 all-attesters = ["kbs_protocol?/all-attesters"]
@@ -44,7 +44,6 @@ tpm-attester = ["kbs_protocol/tpm-attester"]
 nvidia-attester = ["kbs_protocol/nvidia-attester"]
 nvidia-dpu-attester = ["kbs_protocol/nvidia-dpu-attester"]
 
-kms_unwrap = ["crypto/kms_unwrap", "kbs_protocol/kms_unwrap"]
 # Either `rust-crypto` or `openssl` should be enabled to work as underlying crypto module
 rust-crypto = ["crypto/rust-crypto", "kbs_protocol?/rust-crypto"]
 openssl = ["crypto/openssl", "kbs_protocol?/openssl"]

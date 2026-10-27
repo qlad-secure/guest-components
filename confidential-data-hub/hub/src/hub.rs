@@ -30,6 +30,11 @@ pub struct Hub {
     image_client: OnceCell<Mutex<ImageClient>>,
     #[cfg(feature = "ttrpc")]
     aa_client: OnceCell<Option<AttestationAgentServiceClient>>,
+    // Credentials are fetched from KBS on first use rather than at startup:
+    // when CDH boots, the guest network may not be up yet (kata configures it
+    // only after the agent's ttrpc server starts, which in turn waits on CDH),
+    // so an eager fetch deadlocks pod startup.
+    init_once: OnceCell<()>,
     config: CdhConfig,
 }
 
@@ -44,16 +49,20 @@ impl Hub {
             .map(|it| (it.path.clone(), it.resource_uri.clone()))
             .collect();
 
-        let mut hub = Self {
+        Ok(Self {
             credentials,
             config,
             image_client: OnceCell::const_new(),
             #[cfg(feature = "ttrpc")]
             aa_client: OnceCell::const_new(),
-        };
+            init_once: OnceCell::const_new(),
+        })
+    }
 
-        hub.init().await?;
-        Ok(hub)
+    /// Provision KBS-backed credentials on first use; retries on failure.
+    async fn ensure_initialized(&self) -> Result<()> {
+        self.init_once.get_or_try_init(|| self.init()).await?;
+        Ok(())
     }
 }
 
@@ -62,6 +71,7 @@ impl DataHub for Hub {
     async fn unseal_secret(&self, secret: Vec<u8>) -> Result<Vec<u8>> {
         info!("unseal secret called");
 
+        self.ensure_initialized().await?;
         let res = secret::unseal_secret(&secret).await?;
 
         Ok(res)
@@ -70,6 +80,7 @@ impl DataHub for Hub {
     async fn unwrap_key(&self, annotation_packet: &[u8]) -> Result<Vec<u8>> {
         info!("unwrap key called");
 
+        self.ensure_initialized().await?;
         let lek = image::unwrap_key(annotation_packet).await?;
         Ok(lek)
     }
@@ -91,11 +102,13 @@ impl DataHub for Hub {
 
     async fn secure_mount(&self, storage: Storage) -> Result<String> {
         info!("secure mount called");
+        self.ensure_initialized().await?;
         let res = storage.mount().await?;
         Ok(res)
     }
 
     async fn pull_image(&self, image_url: &str, bundle_path: &str) -> Result<String> {
+        self.ensure_initialized().await?;
         let client = self
             .image_client
             .get_or_try_init(
@@ -200,4 +213,50 @@ async fn initialize_aa_client(aa_socket: &str) -> Result<Option<AttestationAgent
         })?;
     let client = AttestationAgentServiceClient::new(c);
     Ok(Some(client))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::io::Write;
+
+    // Credentials must not be fetched at startup: when CDH boots, the guest
+    // network may not exist yet (kata configures it through the agent after
+    // CDH is up), so an eager fetch deadlocks pod startup.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn hub_new_does_not_fetch_credentials() {
+        // skip the default ocicrypt keyprovider config write (a root-only
+        // /run path); irrelevant to what this test exercises
+        let saved_ocicrypt_env = env::var(crate::config::OCICRYPT_KEYPROVIDER_CONFIG_ENV).ok();
+        env::set_var(
+            crate::config::OCICRYPT_KEYPROVIDER_CONFIG_ENV,
+            "/tmp/nonexistent-ocicrypt-config.json",
+        );
+
+        let mut file = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+        file.write_all(
+            br#"
+[kbc]
+name = "cc_kbc"
+url = "https://127.0.0.1:1"
+
+[[credentials]]
+path = "/run/confidential-containers/cdh/kbs/kms-credential/test/credential.json"
+resource_uri = "kbs:///default/kms-credential/test"
+"#,
+        )
+        .unwrap();
+
+        let config = CdhConfig::from_file(file.path().to_str().unwrap()).unwrap();
+
+        // no KBS is reachable; with an eager fetch this would fail
+        Hub::new(config).await.unwrap();
+
+        match saved_ocicrypt_env {
+            Some(v) => env::set_var(crate::config::OCICRYPT_KEYPROVIDER_CONFIG_ENV, v),
+            None => env::remove_var(crate::config::OCICRYPT_KEYPROVIDER_CONFIG_ENV),
+        }
+    }
 }

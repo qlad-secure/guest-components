@@ -1,10 +1,10 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use base64::Engine;
-use getrandom::{rand_core::UnwrapErr, SysRng};
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use hkdf::Hkdf;
 use ml_kem::array::Array;
 use ml_kem::kem::{Decapsulate, Encapsulate, EncapsulationKey, FromSeed, Kem};
-use ml_kem::{DecapsulationKey, MlKem1024, MlKem768, Seed};
+use ml_kem::{DecapsulationKey, MlKem768, MlKem1024, Seed};
 use sha2::Sha256;
 use tracing::debug;
 
@@ -275,7 +275,7 @@ mod tests {
     use base64::Engine;
     use rstest::rstest;
 
-    use crate::{mlkem_decrypt, mlkem_encrypt, MLKEMKeyPair1024, MLKEMKeyPair768, Variant};
+    use crate::{MLKEMKeyPair768, MLKEMKeyPair1024, Variant, mlkem_decrypt, mlkem_encrypt};
 
     #[test]
     fn test_mlkem_key_pair() {

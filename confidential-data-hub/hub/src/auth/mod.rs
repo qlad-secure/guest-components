@@ -9,7 +9,7 @@ use crate::{hub::Hub, Result};
 mod kbs;
 
 impl Hub {
-    pub(crate) async fn init(&mut self) -> Result<()> {
+    pub(crate) async fn init(&self) -> Result<()> {
         #[cfg(feature = "kbs")]
         {
             self.init_kbs_resources().await?;

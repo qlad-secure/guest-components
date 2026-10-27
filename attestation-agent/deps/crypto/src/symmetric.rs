@@ -17,7 +17,7 @@ use crate::native::*;
 use crate::rust::*;
 
 #[cfg(feature = "mlkem")]
-use crate::mlkem::{mlkem_decrypt, mlkem_encrypt, Variant};
+use crate::mlkem::{Variant, mlkem_decrypt, mlkem_encrypt};
 
 pub const AES_GCM_256_KEY_BITS: u32 = 256;
 

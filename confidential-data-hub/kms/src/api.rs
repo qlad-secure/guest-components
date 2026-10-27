@@ -77,19 +77,3 @@ pub trait Getter: Send + Sync {
     /// `annotations`.
     async fn get_secret(&self, name: &str, annotations: &Annotations) -> Result<Vec<u8>>;
 }
-
-#[async_trait]
-#[cfg(feature = "kms_unwrap")]
-pub trait KmsDecrypter: Send + Sync {
-    /// Decrypt a ciphertext that was produced by a cloud KMS asymmetric key.
-    ///
-    /// `name` is the KBS resource URI that identifies the key.
-    /// `ciphertext` is the KMS-specific encrypted payload.
-    /// `annotations` may carry provider-specific hints.
-    async fn decrypt(
-        &self,
-        name: &str,
-        ciphertext: Vec<u8>,
-        annotations: &Annotations,
-    ) -> Result<Vec<u8>>;
-}

@@ -17,6 +17,14 @@ pub enum Error {
     #[error("AWS KMS/Secrets Manager error: {0}")]
     AwsKmsError(String),
 
+    #[cfg(feature = "azure")]
+    #[error("Azure Key Vault error: {0}")]
+    AzureKmsError(String),
+
+    #[cfg(feature = "gcp")]
+    #[error("Google Cloud KMS error: {0}")]
+    GcpKmsError(String),
+
     #[error("Kbs client error: {0}")]
     KbsClientError(String),
 

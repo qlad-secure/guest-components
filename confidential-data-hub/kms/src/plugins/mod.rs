@@ -8,8 +8,6 @@ use std::str::FromStr;
 use strum::{AsRefStr, EnumString};
 
 use crate::{Decrypter, Error, Getter, ProviderSettings, Result};
-#[cfg(feature = "kms_unwrap")]
-use crate::KmsDecrypter;
 
 const _IN_GUEST_DEFAULT_KEY_PATH: &str = "/run/confidential-containers/cdh/kbs/kms-credential";
 
@@ -18,6 +16,12 @@ pub mod aliyun;
 
 #[cfg(feature = "aws")]
 pub mod aws;
+
+#[cfg(feature = "azure")]
+pub mod azure;
+
+#[cfg(feature = "gcp")]
+pub mod gcp;
 
 pub mod kbs;
 
@@ -30,6 +34,14 @@ pub enum DecryptorProvider {
     #[cfg(feature = "aws")]
     #[strum(ascii_case_insensitive)]
     Aws,
+
+    #[cfg(feature = "azure")]
+    #[strum(ascii_case_insensitive)]
+    Azure,
+
+    #[cfg(feature = "gcp")]
+    #[strum(ascii_case_insensitive)]
+    Gcp,
 }
 
 /// Create a new [`Decrypter`] by given provider name and [`ProviderSettings`]
@@ -48,6 +60,16 @@ pub async fn new_decryptor(
         #[cfg(feature = "aws")]
         DecryptorProvider::Aws => Ok(Box::new(
             aws::AwsKmsClient::from_provider_settings(&_provider_settings).await?,
+        ) as Box<dyn Decrypter>),
+
+        #[cfg(feature = "azure")]
+        DecryptorProvider::Azure => Ok(Box::new(
+            azure::AzureKeyVaultClient::from_provider_settings(&_provider_settings).await?,
+        ) as Box<dyn Decrypter>),
+
+        #[cfg(feature = "gcp")]
+        DecryptorProvider::Gcp => Ok(Box::new(
+            gcp::GcpKmsClient::from_provider_settings(&_provider_settings).await?,
         ) as Box<dyn Decrypter>),
     }
 }
@@ -85,21 +107,6 @@ pub async fn new_getter(
         VaultProvider::Aws => Ok(Box::new(
             aws::AwsKmsClient::from_provider_settings(&_provider_settings).await?,
         ) as Box<dyn Getter>),
-    }
-}
-
-#[cfg(feature = "kms_unwrap")]
-#[allow(unreachable_patterns)] // only Kbs is supported as a KMS decrypter today
-/// Create a new [`KmsDecrypter`] backed by KBS.
-pub async fn new_kms_decrypter(
-    provider_name: &str,
-    _provider_settings: ProviderSettings,
-) -> Result<Box<dyn KmsDecrypter>> {
-    let provider = VaultProvider::from_str(provider_name)
-        .map_err(|_| Error::UnsupportedProvider(provider_name.to_string()))?;
-    match provider {
-        VaultProvider::Kbs => Ok(Box::new(kbs::KbcClient::new().await?) as Box<dyn KmsDecrypter>),
-        _ => unimplemented!(),
     }
 }
 

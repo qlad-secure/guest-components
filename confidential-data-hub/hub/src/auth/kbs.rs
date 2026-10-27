@@ -57,6 +57,17 @@ impl Hub {
                 target_path.as_os_str().to_string_lossy()
             );
 
+            // A sealed blob (vault or envelope layout) is unsealed inside the
+            // TEE before being written out, so credentials can be stored in
+            // the KBS repository as sealed secrets.
+            let content = if content.starts_with(b"sealed.") {
+                crate::secret::unseal_secret(&content).await.map_err(|e| {
+                    Error::InitializationFailed(format!("unseal secret failed: {e:?}"))
+                })?
+            } else {
+                content
+            };
+
             if let Some(parent) = target_path.parent() {
                 fs::create_dir_all(parent).await.map_err(|e| {
                     Error::InitializationFailed(format!("create dir {parent:?} failed: {e:?}"))

@@ -324,12 +324,9 @@ impl KeyProviderKeyWrapper {
         {
             let ttrpc = ttrpc.to_string();
             let protocol_output =
-                KeyProviderKeyWrapProtocolOutput::from_ttrpc(_input, &ttrpc, OpKey::Wrap)
-                    .map_err(|e| {
-                        anyhow!(
-                            "keyprovider: ttrpc provider failed to execute Wrap: {e:?}"
-                        )
-                    })?;
+                KeyProviderKeyWrapProtocolOutput::from_ttrpc(_input, &ttrpc, OpKey::Wrap).map_err(
+                    |e| anyhow!("keyprovider: ttrpc provider failed to execute Wrap: {e:?}"),
+                )?;
             if let Some(result) = protocol_output.key_wrap_results {
                 Ok(result.annotation)
             } else {
@@ -408,11 +405,7 @@ impl KeyProviderKeyWrapper {
             let ttrpc = ttrpc.to_string();
 
             KeyProviderKeyWrapProtocolOutput::from_ttrpc(_input, &ttrpc, OpKey::Unwrap)
-                .map_err(|e| {
-                    anyhow!(
-                        "keyprovider: failed to unwrap key by ttrpc: {e:?}"
-                    )
-                })
+                .map_err(|e| anyhow!("keyprovider: failed to unwrap key by ttrpc: {e:?}"))
         }
     }
 

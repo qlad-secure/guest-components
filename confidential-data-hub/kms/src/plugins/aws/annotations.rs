@@ -28,6 +28,12 @@ pub struct AwsCryptAnnotations {
     /// [ctx]: https://docs.aws.amazon.com/kms/latest/developerguide/concepts.html#encrypt_context
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub encryption_context: HashMap<String, String>,
+
+    /// Optional KMS `EncryptionAlgorithmSpec` (e.g. `RSAES_OAEP_SHA_256`).
+    /// Required when the ciphertext was produced under an asymmetric key
+    /// unset means the KMS default (`SYMMETRIC_DEFAULT`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption_algorithm: Option<String>,
 }
 
 /// Serialized [`crate::Annotations`] for AWS Secrets Manager `GetSecretValue`.

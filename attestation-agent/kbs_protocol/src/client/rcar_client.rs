@@ -7,15 +7,11 @@ use std::time::Duration;
 
 use anyhow::{Context, bail};
 use async_trait::async_trait;
-#[cfg(feature = "kms_unwrap")]
-use base64::Engine;
 use kbs_types::HashAlgorithm;
 use kbs_types::{
     Attestation, Challenge, CompositeEvidence, ErrorInformation, InitData, Request, Response,
     RuntimeData, Tee,
 };
-#[cfg(feature = "kms_unwrap")]
-use resource_uri::ResourcePluginPath;
 use resource_uri::ResourceUri;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -338,89 +334,6 @@ impl KbsClient<Box<dyn EvidenceProvider>> {
 
 #[async_trait]
 impl KbsClientCapabilities for KbsClient<Box<dyn EvidenceProvider>> {
-    #[cfg(feature = "kms_unwrap")]
-    async fn decrypt_with_kms(
-        &mut self,
-        resource_uri: ResourceUri,
-        ciphertext: Vec<u8>,
-        provider: &str,
-    ) -> Result<Vec<u8>> {
-        let ResourcePluginPath { repo, r#type, tag } =
-            ResourcePluginPath::try_from(resource_uri)
-                .map_err(|e| Error::InvalidResourceUri(e.to_string()))?;
-
-        let remote_url = format!(
-            "{}/{KBS_PREFIX}/external/kms-decrypt/{}/{}/{}/{}",
-            self.kbs_host_url, provider, repo, r#type, tag
-        );
-
-        let body = serde_json::json!({
-            "key_id": tag,
-            "ciphertext": base64::engine::general_purpose::STANDARD.encode(&ciphertext),
-        });
-
-        for attempt in 1..=KBS_GET_RESOURCE_MAX_ATTEMPT {
-            debug!("KBS client: trying to request KBS, attempt {attempt}");
-
-            let res = self
-                .http_client
-                .post(&remote_url)
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| Error::HttpError(format!("post failed: {e:?}")))?;
-
-            match res.status() {
-                reqwest::StatusCode::OK => {
-                    let response = res
-                        .json::<Response>()
-                        .await
-                        .map_err(|e| Error::KbsResponseDeserializationFailed(e.to_string()))?;
-                    let payload_data = self
-                        .tee_key
-                        .decrypt_response(response)
-                        .map_err(|e| Error::DecryptResponseFailed(e.to_string()))?;
-                    return Ok(payload_data);
-                }
-                reqwest::StatusCode::UNAUTHORIZED => {
-                    warn!(
-                        "Authenticating with KBS failed. Perform a new RCAR handshake: {:#?}",
-                        res.json::<ErrorInformation>()
-                            .await
-                            .map_err(|e| Error::KbsResponseDeserializationFailed(e.to_string()))?,
-                    );
-                    self.rcar_handshake()
-                        .await
-                        .map_err(|e| Error::RcarHandshake(e.to_string()))?;
-
-                    continue;
-                }
-                reqwest::StatusCode::NOT_FOUND => {
-                    let errorinfo = format!(
-                        "KBS resource Not Found (Error 404): {:#?}",
-                        res.json::<ErrorInformation>()
-                            .await
-                            .map_err(|e| Error::KbsResponseDeserializationFailed(e.to_string()))?
-                    );
-
-                    return Err(Error::ResourceNotFound(errorinfo));
-                }
-                _ => {
-                    let errorinfo = format!(
-                        "KBS Server Internal Failed, Response: {:#?}",
-                        res.json::<ErrorInformation>()
-                            .await
-                            .map_err(|e| Error::KbsResponseDeserializationFailed(e.to_string()))?
-                    );
-
-                    return Err(Error::KbsInternalError(errorinfo));
-                }
-            }
-        }
-
-        Err(Error::UnAuthorized)
-    }
-
     async fn get_resource(&mut self, resource_uri: ResourceUri) -> Result<Vec<u8>> {
         let mut remote_url = format!(
             "{}/{KBS_PREFIX}/{}/{}",

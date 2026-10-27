@@ -34,6 +34,8 @@ aws-sdk-secretsmanager = { version = "1.109", default-features = false, features
     "rt-tokio",
 ] }
 base64 = "0.23.1"
+azure_identity = "1.1.0-beta.1"
+azure_security_keyvault_keys = "1.1.0-beta.1"
 base64-serde = "0.8"
 bincode = "2.0.1"
 cfg-if = "1.0.4"
@@ -42,6 +44,8 @@ clap = "~4.6.1"
 config = "0.15.23"
 const_format = "0.2.36"
 ctr = "0.10.0"
+google-cloud-auth = { version = "=1.16.0", default-features = false }
+google-cloud-kms-v1 = "=1.14.0"
 hex = "0.4.3"
 hmac = "0.13.0"
 jwt-simple = { version = "0.12", default-features = false, features = [
@@ -50,6 +54,7 @@ jwt-simple = { version = "0.12", default-features = false, features = [
 kbs-types = "0.18.0"
 nix = "0.31"
 openssl = "0.10"
+percent-encoding = "2.3"
 prost = "0.14"
 protobuf = "3.7.2"
 rand = "0.10.1"

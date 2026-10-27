@@ -173,6 +173,10 @@ impl Decrypter for AwsKmsClient {
             .key_id(key_id)
             .ciphertext_blob(Blob::new(ciphertext.to_vec()));
 
+        if let Some(algorithm) = crypt_annotations.encryption_algorithm {
+            request = request.encryption_algorithm(algorithm.as_str().into());
+        }
+
         if !crypt_annotations.encryption_context.is_empty() {
             request = request.set_encryption_context(Some(crypt_annotations.encryption_context));
         }

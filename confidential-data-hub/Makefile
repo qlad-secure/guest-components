@@ -32,6 +32,10 @@ else
 endif
 # Enable the `kbs` cargo feature (cc_kbc / CoCo KBS). offline_fs_kbc is always built.
 ENABLE_KBS ?= true
+# Extra resource-provider features (e.g. sev, mlkem, kms_unwrap) passed through
+# to cargo --features. Upstream v0.22.0 removed this passthrough; the fork
+# needs it for the KMS-DIRECT and ML-KEM feature gates.
+RESOURCE_PROVIDER ?=
 KMS_PROVIDER ?= aliyun
 DESTDIR ?= $(PREFIX)/bin
 RUSTFLAGS_ARGS ?=
@@ -55,6 +59,12 @@ endif
 
 ifeq ($(ENABLE_KBS), true)
     features += kbs
+endif
+
+ifneq ($(RESOURCE_PROVIDER),)
+ifneq ($(RESOURCE_PROVIDER), none)
+    features += $(RESOURCE_PROVIDER)
+endif
 endif
 
 ifneq ($(KMS_PROVIDER), none)
@@ -126,5 +136,5 @@ clean:
 
 help:
 	@echo "==========================Help========================================="
-	@echo "build: make [DEBUG=1] [LIBC=(musl)] [ARCH=(x86_64/s390x/ppc64le)] [ENABLE_KBS=(true/false)] [KMS_PROVIDER=aliyun/aws] [RPC=(ttrpc/grpc)]"
+	@echo "build: make [DEBUG=1] [LIBC=(musl)] [ARCH=(x86_64/s390x/ppc64le)] [RESOURCE_PROVIDER=(kbs/sev)] [KMS_PROVIDER=aliyun/aws/azure/gcp] [RPC=(ttrpc/grpc)]"
 	@echo "install: make install [DESTDIR=/path/to/target] [LIBC=(musl)]"

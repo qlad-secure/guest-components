@@ -18,19 +18,10 @@ pub use resource_uri::ResourceUri;
 use tokio::sync::Mutex;
 
 use crate::{Annotations, Error, Getter, Result};
-#[cfg(feature = "kms_unwrap")]
-use crate::KmsDecrypter;
 
 #[async_trait]
 pub trait Kbc: Send + Sync {
     async fn get_resource(&mut self, _rid: ResourceUri) -> Result<Vec<u8>>;
-    #[cfg(feature = "kms_unwrap")]
-    async fn decrypt_with_kms(
-        &mut self,
-        _rid: ResourceUri,
-        _ciphertext: Vec<u8>,
-        _annotations: &Annotations,
-    ) -> Result<Vec<u8>>;
 }
 
 /// A fake KbcClient to carry the [`Getter`] semantics. The real `new()`
@@ -79,39 +70,6 @@ impl Getter for KbcClient {
             #[cfg(feature = "kbs")]
             Self::Cc(c) => c.lock().await.get_resource(resource_uri).await,
             Self::OfflineFs(c) => c.lock().await.get_resource(resource_uri).await,
-        }
-    }
-}
-
-#[async_trait]
-#[cfg(feature = "kms_unwrap")]
-impl KmsDecrypter for KbcClient {
-    async fn decrypt(
-        &self,
-        name: &str,
-        ciphertext: Vec<u8>,
-        annotations: &Annotations,
-    ) -> Result<Vec<u8>> {
-        let resource_uri = ResourceUri::try_from(name)
-            .map_err(|_| Error::KbsClientError(format!("illegal kbs resource uri: {name}")))?;
-        let real_client = KBS_CLIENT.clone();
-        let mut client = real_client.lock().await;
-
-        if client.is_none() {
-            let c = RealClient::new().await?;
-            *client = Some(c);
-        }
-
-        let client = client.as_mut().expect("must be initialized");
-
-        match client {
-            #[cfg(feature = "kbs")]
-            RealClient::Cc(c) => c.decrypt_with_kms(resource_uri, ciphertext, annotations).await,
-            #[cfg(feature = "sev")]
-            RealClient::Sev(c) => c.decrypt_with_kms(resource_uri, ciphertext, annotations).await,
-            RealClient::OfflineFs(c) => {
-                c.decrypt_with_kms(resource_uri, ciphertext, annotations).await
-            }
         }
     }
 }
