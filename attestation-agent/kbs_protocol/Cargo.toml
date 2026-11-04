@@ -9,6 +9,10 @@ build = "build.rs"
 
 [dependencies]
 anyhow.workspace = true
+execution-proof-client = { path = "../../../execution-proof-prototype/client", optional = true }
+execution-proof-contract = { path = "../../../execution-proof-prototype/contract", optional = true }
+legacy-kbs-types = { package = "kbs-types", version = "=0.15.0", optional = true }
+ring = { workspace = true, optional = true }
 async-trait.workspace = true
 attester = { path = "../attester", default-features = false }
 base64.workspace = true
@@ -45,6 +49,7 @@ url.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+rsa = { workspace = true, features = ["sha2"] }
 rstest.workspace = true
 serial_test.workspace = true
 tempfile.workspace = true
@@ -59,6 +64,9 @@ name = "trustee-attester"
 required-features = ["bin"]
 
 [features]
+# Separate launch/credential protocol; no legacy token or Sample fallback.
+launch-recorder = ["dep:execution-proof-client", "dep:execution-proof-contract", "dep:legacy-kbs-types", "dep:ring", "serde_json_canonicalizer", "rust-crypto", "crypto/mlkem"]
+launch-recorder-tdx = ["launch-recorder", "attester/tdx-attester"]
 default = [
     "background_check",
     "passport",

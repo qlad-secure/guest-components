@@ -78,6 +78,8 @@ pub mod client;
 pub mod error;
 pub mod evidence_provider;
 pub mod keypair;
+#[cfg(feature = "launch-recorder")]
+pub mod launch_recorder;
 pub mod token_provider;
 
 pub use api::*;

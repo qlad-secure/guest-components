@@ -11,6 +11,9 @@ pub use api::*;
 
 pub mod hub;
 
+#[cfg(feature = "launch-credential")]
+pub mod launch_credential;
+
 pub mod auth;
 
 pub mod config;

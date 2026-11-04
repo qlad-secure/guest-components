@@ -76,4 +76,6 @@ azure = [
     "url",
 ]
 gcp = ["google-cloud-auth", "google-cloud-kms-v1"]
+# Explicit memory-only credentials for the opt-in attempt-owned GCP workflow.
+launch-credential = ["gcp"]
 kbs = ["kbs_protocol"]

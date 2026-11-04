@@ -52,6 +52,9 @@ jose-jwa = "0.1.2"
 jose-jwk = "0.1.2"
 jose-jws = "0.1.2"
 kms = { path = "../kms", default-features = false, features = ["kbs"] }
+kbs_protocol = { path = "../../attestation-agent/kbs_protocol", default-features = false, features = ["launch-recorder"], optional = true }
+execution-proof-contract = { path = "../../../execution-proof-prototype/contract", optional = true }
+sha2 = { workspace = true, optional = true }
 libcryptsetup-rs = { version = "0.13.1", optional = true, features = ["mutex"] }
 nix.workspace = true
 percent-encoding.workspace = true
@@ -95,6 +98,9 @@ tokio = { workspace = true, features = ["rt", "macros"] }
 
 [features]
 default = ["aliyun", "kbs", "bin", "ttrpc", "grpc", "cli", "mlkem"]
+
+# Attempt-owned memory-only GCP credentials; no global initialization or files.
+launch-credential = ["kms/launch-credential", "dep:kbs_protocol", "dep:execution-proof-contract", "dep:sha2"]
 
 # support aliyun stacks (KMS, ..)
 aliyun = ["kms/aliyun"]
