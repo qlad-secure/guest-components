@@ -27,6 +27,12 @@ mod executable;
 #[cfg(feature = "launch-preparation-executable")]
 pub use executable::{CheckedStagingExecutable, StagedExecutableError};
 
+#[cfg(feature = "launch-preparation-erofs")]
+#[path = "staging_builder.rs"]
+mod builder;
+#[cfg(feature = "launch-preparation-erofs")]
+pub use builder::{BuilderInput, BuilderInputError, BuilderInputLimits};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum RootfsStagingError {
     #[error("rootfs staging limits are invalid")]

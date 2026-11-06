@@ -29,3 +29,24 @@ pub mod launch_spec;
 pub mod static_elf;
 
 pub use sealed_image::{SealedImageBytes, SealedImageError};
+
+#[cfg(any(
+    feature = "launch-preparation-erofs",
+    feature = "launch-preparation-receive-core"
+))]
+pub(crate) mod erofs_reader;
+
+#[cfg(feature = "launch-preparation-erofs")]
+pub mod erofs_builder;
+
+#[cfg(feature = "launch-preparation-mount")]
+pub(crate) mod mounted_view_check;
+
+#[cfg(feature = "launch-preparation-mount")]
+pub mod erofs_mount;
+
+#[cfg(feature = "launch-preparation-mount")]
+pub(crate) mod readonly_ramfs;
+
+#[cfg(feature = "launch-preparation-receive")]
+pub mod received_view;

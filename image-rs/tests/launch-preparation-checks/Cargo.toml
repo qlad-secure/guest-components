@@ -14,6 +14,14 @@ launch-preparation-signature = ["launch-preparation", "dep:base64", "dep:serde",
 launch-preparation-content = ["launch-preparation", "dep:base64", "dep:serde", "dep:serde_json", "dep:ocicrypt-rs", "dep:tokio", "dep:flate2", "dep:zeroize", "dep:async-compression", "dep:tokio-tar"]
 launch-preparation-registry = ["launch-preparation", "dep:reqwest", "dep:url", "dep:base64", "dep:serde", "dep:serde_json", "dep:oci-spec", "dep:zeroize", "dep:tokio"]
 launch-preparation-executable = ["launch-preparation-content"]
+launch-preparation-erofs = ["launch-preparation-executable"]
+# Detached EROFS view and actual filesystem/executable revalidation.
+launch-preparation-mount = ["launch-preparation-erofs"]
+launch-preparation-offer = ["launch-preparation-erofs"]
+launch-preparation-custody = ["launch-preparation-offer"]
+launch-preparation-receive = ["launch-preparation-mount"]
+launch-preparation-receive-core = []
+launch-preparation-mount-native = ["launch-preparation-mount"]
 
 [dependencies]
 nix = { version = "=0.31.3", features = ["fs"] }
@@ -36,3 +44,15 @@ url = { version = "=2.5.8", optional = true }
 [dev-dependencies]
 openssl = { version = "=0.10.81", features = ["vendored"] }
 tokio = { version = "=1.52.3", features = ["rt", "macros", "time", "sync"] }
+
+[[test]]
+name = "native_erofs_mount"
+path = "native-erofs-mount.rs"
+harness = false
+required-features = ["launch-preparation-mount-native"]
+
+[[test]]
+name = "native_ramfs_backing"
+path = "native-ramfs-backing.rs"
+harness = false
+required-features = ["launch-preparation-mount-native"]

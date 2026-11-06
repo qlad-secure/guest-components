@@ -87,6 +87,14 @@ launch-preparation-content = ["launch-preparation", "dep:zeroize", "ocicrypt-rs/
 launch-preparation-registry = ["launch-preparation", "dep:reqwest", "reqwest/rustls", "dep:zeroize"]
 # Signed candidate/static ELF checks only; no mount, lease or launch authority.
 launch-preparation-executable = ["launch-preparation-content"]
+# Pinned native build, actual readback and sealed backing; no mount/start permit.
+launch-preparation-erofs = ["launch-preparation-executable"]
+# Detached EROFS view and actual filesystem/executable revalidation.
+launch-preparation-mount = ["launch-preparation-erofs"]
+launch-preparation-offer = ["launch-preparation-erofs"]
+launch-preparation-custody = ["launch-preparation-offer"]
+launch-preparation-receive = ["launch-preparation-mount"]
+launch-preparation-receive-core = []
 default = [
     "signature-cosign-rustls",
     "keywrap-grpc",
