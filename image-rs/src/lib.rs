@@ -12,6 +12,8 @@ pub mod digest;
 pub mod image;
 pub mod layer_store;
 pub mod meta_store;
+#[cfg(feature = "launch-preparation")]
+pub mod preparation;
 pub mod pull;
 pub mod registry;
 pub mod resource;

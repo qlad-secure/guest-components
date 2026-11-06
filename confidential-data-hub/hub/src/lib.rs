@@ -14,6 +14,9 @@ pub mod hub;
 #[cfg(feature = "launch-credential")]
 pub mod launch_credential;
 
+#[cfg(feature = "launch-preparation")]
+pub mod launch_preparation;
+
 pub mod auth;
 
 pub mod config;

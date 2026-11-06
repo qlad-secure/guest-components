@@ -4,14 +4,17 @@
 //! environment variables, or credential files. It validates its own roots and
 //! attempt scope before consuming an opaque credential. Construction performs
 //! no OAuth/KMS request and does not authenticate a Google service account.
-//! `decrypt_once` invokes the actual GCP SDK path only when explicitly called;
-//! it is not an unrestricted key-id/ciphertext decryption interface.
+//! `decrypt_layer_once` invokes the existing GCP SDK for a preapproved layer
+//! operation. The trusted embedding runtime must derive the bounded operation
+//! list from its verified manifest; this adapter does not verify that manifest.
 
 use execution_proof_contract::{LaunchBinding, ValidityWindow};
+use execution_proof_handoff::admission::AcceptedAttemptContext;
 use kbs_protocol::launch_recorder::AttemptCredential;
-use kms::{plugins::gcp::GcpKmsClient, Annotations, Decrypter};
+use kms::plugins::gcp::GcpKmsClient;
+use kms::{Annotations, Decrypter};
 use sha2::{Digest, Sha384};
-use std::{fmt, sync::Arc};
+use std::{collections::BTreeSet, fmt};
 use zeroize::Zeroizing;
 
 pub const MAX_KMS_CIPHERTEXT_BYTES: usize = 64 * 1024;
@@ -32,21 +35,29 @@ pub struct TrustedGcpAttempt {
     pub client_email: String,
     /// Full immutable CryptoKeyVersion name, never a caller-selected key alias.
     pub kms_key_version: String,
-    /// SHA384 of the exact wrapped KMS-DIRECT bytes approved for this attempt.
+    /// Trusted profile budget, not a value taken from the delivery response.
+    pub operation_limit: usize,
+    /// Selected packets for encrypted layers of `binding.selected_manifest_sha256`.
+    /// Manifest verification and construction of this list belong to the trusted
+    /// preparation runtime; neither is implemented by this adapter.
+    pub layer_operations: Vec<TrustedGcpLayerOperation>,
+}
+
+#[derive(Clone)]
+pub struct TrustedGcpLayerOperation {
+    /// Index in the selected manifest, including any unencrypted layers.
+    pub layer_index: u32,
+    /// SHA256 of the exact encrypted layer descriptor's blob, without a prefix.
+    pub layer_digest_sha256: String,
+    /// SHA384 of the selected wrapped KMS-DIRECT bytes for this layer.
     pub ciphertext_sha384: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CredentialClockError {
-    Unavailable,
-    OutOfRange,
-}
-
-/// Supplied by the trusted embedding runtime. There is no wall-clock default:
-/// a host-controlled guest clock is insufficient, and an actual trusted guest
-/// time source is not established by this software adapter.
-pub trait CredentialClock: Send + Sync {
-    fn now_unix_seconds(&self) -> Result<u64, CredentialClockError>;
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum OperationState {
+    Pending,
+    Consumed,
+    Succeeded,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,11 +68,7 @@ pub enum CredentialError {
     InvalidCredential,
     InvalidCiphertext,
     AlreadyUsed,
-    ClockUnavailable,
-    ClockOutOfRange,
-    ClockRegression,
-    NotYetValid,
-    Expired,
+    AttemptUnavailable,
     KmsOperationFailed,
 }
 
@@ -73,12 +80,10 @@ impl fmt::Display for CredentialError {
             Self::UntrustedKey => "credential producer root mismatch",
             Self::InvalidCredential => "attempt GCP credential rejected",
             Self::InvalidCiphertext => "ciphertext does not match the approved KMS operation",
-            Self::AlreadyUsed => "attempt GCP operation already consumed",
-            Self::ClockUnavailable => "attempt credential clock unavailable",
-            Self::ClockOutOfRange => "attempt credential clock out of range",
-            Self::ClockRegression => "attempt credential clock regressed",
-            Self::NotYetValid => "attempt credential is not yet valid",
-            Self::Expired => "attempt credential expired",
+            Self::AlreadyUsed => "attempt GCP layer operation already consumed",
+            Self::AttemptUnavailable => {
+                "attempt GCP provider unavailable after failure or cancellation"
+            }
             Self::KmsOperationFailed => "attempt Cloud KMS operation failed",
         })
     }
@@ -91,8 +96,7 @@ impl std::error::Error for CredentialError {}
 pub struct AttemptGcpDecrypter {
     client: Option<GcpKmsClient>,
     expected: TrustedGcpAttempt,
-    clock: Arc<dyn CredentialClock>,
-    last_seen: u64,
+    operation_states: Vec<OperationState>,
     delivery_sha384: String,
 }
 
@@ -100,15 +104,23 @@ impl AttemptGcpDecrypter {
     pub fn from_credential(
         credential: AttemptCredential,
         expected: TrustedGcpAttempt,
-        clock: Arc<dyn CredentialClock>,
+        admission: &AcceptedAttemptContext,
     ) -> Result<Self, CredentialError> {
         validate_configuration(&expected)?;
         if credential.authority_key_sha384() != hash(&expected.authority_public_key)
+            || admission.authority_key_sha384() != hash(&expected.authority_public_key)
             || credential.delivery().kbs_proof_key_sha384() != hash(&expected.kbs_proof_public_key)
+            || admission.aggregate_key_sha384() != hash(&expected.kbs_proof_public_key)
         {
             return Err(CredentialError::UntrustedKey);
         }
         if credential.binding() != &expected.binding
+            || admission.binding() != &expected.binding
+            || admission.grant_digest() != expected.grant_sha384
+            || admission.aggregate_digest() != credential.delivery().aggregate_digest()
+            || admission.validity() != &expected.validity
+            || admission.workflow_id() != expected.workflow_id
+            || admission.resource_path() != &expected.resource_path
             || credential.grant_digest() != expected.grant_sha384
             || credential.delivery().grant_digest() != expected.grant_sha384
             || credential.delivery().workflow_id() != expected.workflow_id
@@ -117,8 +129,6 @@ impl AttemptGcpDecrypter {
         {
             return Err(CredentialError::ScopeMismatch);
         }
-        let now = clock_now(clock.as_ref())?;
-        check_window(&expected.validity, now)?;
         let delivery_sha384 = credential.delivery().digest_sha384().to_owned();
         let secret = credential.into_secret();
         let client = GcpKmsClient::from_credential_bytes(
@@ -128,18 +138,13 @@ impl AttemptGcpDecrypter {
         )
         .map_err(|_| CredentialError::InvalidCredential)?;
         drop(secret);
-        // Parsing may take time; do not return a newly admitted provider after
-        // clock failure, rollback, or expiry during construction.
-        let later = clock_now(clock.as_ref())?;
-        if later < now {
-            return Err(CredentialError::ClockRegression);
-        }
-        check_window(&expected.validity, later)?;
+        // The authority already committed admission after checking its clock.
+        // The gate authenticates that exact boot/attempt/aggregate and issues a
+        // nonforgeable, one-use context; guest wall time is not an authority.
         Ok(Self {
             client: Some(client),
+            operation_states: vec![OperationState::Pending; expected.layer_operations.len()],
             expected,
-            clock,
-            last_seen: later,
             delivery_sha384,
         })
     }
@@ -151,14 +156,28 @@ impl AttemptGcpDecrypter {
         &self.delivery_sha384
     }
 
-    /// One explicit, exact KMS-DIRECT operation. The actual provider is consumed
-    /// before awaiting the SDK, so cancellation, response loss, and SDK failure
-    /// cannot silently trigger a second Cloud KMS call through this object.
-    pub async fn decrypt_once(
+    /// True only after every configured operation succeeded. This does not
+    /// assert that image verification, unpacking, or protected handoff finished.
+    pub fn all_operations_succeeded(&self) -> bool {
+        self.client.is_some()
+            && self
+                .operation_states
+                .iter()
+                .all(|state| *state == OperationState::Succeeded)
+    }
+
+    /// Execute one preapproved layer operation through the existing provider.
+    /// Each entry is consumed before awaiting the SDK. Failure or cancellation
+    /// leaves the sole provider unavailable for the rest of this attempt.
+    /// SDK-internal retries are not a guarantee of one physical network request.
+    pub async fn decrypt_layer_once(
         &mut self,
+        layer_index: u32,
+        layer_digest_sha256: &str,
         ciphertext: &[u8],
     ) -> Result<Zeroizing<Vec<u8>>, CredentialError> {
-        let mut client = self.start_operation(ciphertext)?;
+        let (mut client, position) =
+            self.start_operation(layer_index, layer_digest_sha256, ciphertext)?;
         let plaintext = Zeroizing::new(
             client
                 .decrypt(
@@ -169,31 +188,49 @@ impl AttemptGcpDecrypter {
                 .await
                 .map_err(|_| CredentialError::KmsOperationFailed)?,
         );
-        self.observe_clock()?;
+        self.finish_operation(client, position);
         Ok(plaintext)
     }
 
-    fn start_operation(&mut self, ciphertext: &[u8]) -> Result<GcpKmsClient, CredentialError> {
-        if self.client.is_none() {
+    fn start_operation(
+        &mut self,
+        layer_index: u32,
+        layer_digest_sha256: &str,
+        ciphertext: &[u8],
+    ) -> Result<(GcpKmsClient, usize), CredentialError> {
+        // Taking ownership first also makes a scope/packet rejection
+        // terminal. Callers cannot ignore an error and continue preparation.
+        let client = self
+            .client
+            .take()
+            .ok_or(CredentialError::AttemptUnavailable)?;
+        let position = self
+            .expected
+            .layer_operations
+            .iter()
+            .position(|operation| operation.layer_index == layer_index)
+            .ok_or(CredentialError::ScopeMismatch)?;
+        if self.operation_states[position] != OperationState::Pending {
             return Err(CredentialError::AlreadyUsed);
+        }
+        let operation = &self.expected.layer_operations[position];
+        if operation.layer_digest_sha256 != layer_digest_sha256 {
+            return Err(CredentialError::ScopeMismatch);
         }
         if ciphertext.is_empty()
             || ciphertext.len() > MAX_KMS_CIPHERTEXT_BYTES
-            || hash(ciphertext) != self.expected.ciphertext_sha384
+            || hash(ciphertext) != operation.ciphertext_sha384
         {
             return Err(CredentialError::InvalidCiphertext);
         }
-        self.observe_clock()?;
-        self.client.take().ok_or(CredentialError::AlreadyUsed)
+        self.operation_states[position] = OperationState::Consumed;
+        Ok((client, position))
     }
 
-    fn observe_clock(&mut self) -> Result<(), CredentialError> {
-        let now = clock_now(self.clock.as_ref())?;
-        if now < self.last_seen {
-            return Err(CredentialError::ClockRegression);
-        }
-        self.last_seen = now;
-        check_window(&self.expected.validity, now)
+    // Production calls this only after the actual SDK decrypt succeeded.
+    fn finish_operation(&mut self, client: GcpKmsClient, position: usize) {
+        self.operation_states[position] = OperationState::Succeeded;
+        self.client = Some(client);
     }
 }
 
@@ -202,7 +239,6 @@ fn validate_configuration(expected: &TrustedGcpAttempt) -> Result<(), Credential
         || expected.kbs_proof_public_key == [0; 32]
         || expected.authority_public_key == expected.kbs_proof_public_key
         || !hash_field(&expected.grant_sha384)
-        || !hash_field(&expected.ciphertext_sha384)
         || !identifier(&expected.workflow_id)
         || expected.resource_path.iter().any(|part| !segment(part))
         || !segment(&expected.project_id)
@@ -214,8 +250,20 @@ fn validate_configuration(expected: &TrustedGcpAttempt) -> Result<(), Credential
             .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
         || expected.validity.validate().is_err()
         || !key_version(&expected.kms_key_version, &expected.project_id)
+        || expected.operation_limit == 0
+        || expected.layer_operations.is_empty()
+        || expected.layer_operations.len() > expected.operation_limit
     {
         return Err(CredentialError::InvalidConfiguration);
+    }
+    let mut layer_indices = BTreeSet::new();
+    for operation in &expected.layer_operations {
+        if !digest_field(&operation.layer_digest_sha256, 64)
+            || !hash_field(&operation.ciphertext_sha384)
+            || !layer_indices.insert(operation.layer_index)
+        {
+            return Err(CredentialError::InvalidConfiguration);
+        }
     }
     Ok(())
 }
@@ -254,7 +302,10 @@ fn identifier(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte))
 }
 fn hash_field(value: &str) -> bool {
-    value.len() == 96
+    digest_field(value, 96)
+}
+fn digest_field(value: &str, length: usize) -> bool {
+    value.len() == length
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
@@ -265,34 +316,14 @@ fn hash(bytes: &[u8]) -> String {
         .map(|byte| format!("{byte:02x}"))
         .collect()
 }
-fn clock_now(clock: &dyn CredentialClock) -> Result<u64, CredentialError> {
-    let now = clock.now_unix_seconds().map_err(|error| match error {
-        CredentialClockError::Unavailable => CredentialError::ClockUnavailable,
-        CredentialClockError::OutOfRange => CredentialError::ClockOutOfRange,
-    })?;
-    if now > i64::MAX as u64 {
-        return Err(CredentialError::ClockOutOfRange);
-    }
-    Ok(now)
-}
-fn check_window(validity: &ValidityWindow, now: u64) -> Result<(), CredentialError> {
-    if now < validity.not_before {
-        return Err(CredentialError::NotYetValid);
-    }
-    if now >= validity.expires {
-        return Err(CredentialError::Expired);
-    }
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
     #[test]
     fn only_an_exact_versioned_key_in_the_configured_project_is_supported() {
-        let key="projects/project-1/locations/us-central1/keyRings/ring/cryptoKeys/key/cryptoKeyVersions/1";
+        let key = "projects/project-1/locations/us-central1/keyRings/ring/cryptoKeys/key/cryptoKeyVersions/1";
         assert!(key_version(key, "project-1"));
         assert!(!key_version(&"/".repeat(2048), "project-1"));
         for other in [
@@ -306,47 +337,9 @@ mod tests {
         }
     }
 
-    struct FixedClock(Result<u64, CredentialClockError>);
-    impl CredentialClock for FixedClock {
-        fn now_unix_seconds(&self) -> Result<u64, CredentialClockError> {
-            self.0
-        }
-    }
-    #[test]
-    fn trusted_clock_and_half_open_window_checks_fail_closed() {
-        assert_eq!(
-            clock_now(&FixedClock(Err(CredentialClockError::Unavailable))).err(),
-            Some(CredentialError::ClockUnavailable)
-        );
-        assert_eq!(
-            clock_now(&FixedClock(Ok(u64::MAX))).err(),
-            Some(CredentialError::ClockOutOfRange)
-        );
-        let window = ValidityWindow {
-            not_before: 1000,
-            expires: 1030,
-        };
-        assert_eq!(
-            check_window(&window, 999).err(),
-            Some(CredentialError::NotYetValid)
-        );
-        assert!(check_window(&window, 1000).is_ok());
-        assert_eq!(
-            check_window(&window, 1030).err(),
-            Some(CredentialError::Expired)
-        );
-    }
-
-    struct ManualClock(Mutex<Result<u64, CredentialClockError>>);
-    impl CredentialClock for ManualClock {
-        fn now_unix_seconds(&self) -> Result<u64, CredentialClockError> {
-            *self.0.lock().unwrap()
-        }
-    }
-
-    /// Construct the SDK provider from synthetic public JSON to test its guards.
-    /// Delivery authentication, OAuth, and Cloud KMS are outside this fixture.
-    fn guard_fixture() -> (AttemptGcpDecrypter, Arc<ManualClock>) {
+    /// Exercise the SDK call's state guards without invoking OAuth or decrypt.
+    /// Delivery authentication and Cloud KMS success require separate fixtures.
+    fn guard_fixture() -> AttemptGcpDecrypter {
         let expected = TrustedGcpAttempt {
             authority_public_key: [1; 32], kbs_proof_public_key: [2; 32],
             binding: LaunchBinding {
@@ -358,7 +351,19 @@ mod tests {
             workflow_id:"gcp-credential".into(),resource_path:["tenant".into(),"gcp-credential".into(),"v1".into()],
             project_id:"project-1".into(),client_email:"svc@project-1.iam.gserviceaccount.com".into(),
             kms_key_version:"projects/project-1/locations/us-central1/keyRings/ring/cryptoKeys/key/cryptoKeyVersions/1".into(),
-            ciphertext_sha384:hash(b"wrapped-layer-key"),
+            operation_limit: 2,
+            layer_operations: vec![
+                TrustedGcpLayerOperation {
+                    layer_index: 0,
+                    layer_digest_sha256: "11".repeat(32),
+                    ciphertext_sha384: hash(b"wrapped-layer-key"),
+                },
+                TrustedGcpLayerOperation {
+                    layer_index: 2,
+                    layer_digest_sha256: "12".repeat(32),
+                    ciphertext_sha384: hash(b"second-wrapped-layer-key"),
+                },
+            ],
         };
         validate_configuration(&expected).unwrap();
         let credential=br#"{"type":"service_account","project_id":"project-1","client_email":"svc@project-1.iam.gserviceaccount.com","private_key":"software-fixture-not-a-valid-key","token_uri":"https://oauth2.googleapis.com/token"}"#;
@@ -368,55 +373,149 @@ mod tests {
             &expected.client_email,
         )
         .unwrap();
-        let clock = Arc::new(ManualClock(Mutex::new(Ok(1000))));
-        (
-            AttemptGcpDecrypter {
-                client: Some(client),
-                expected,
-                clock: clock.clone(),
-                last_seen: 1000,
-                delivery_sha384: "0c".repeat(48),
-            },
-            clock,
-        )
+        AttemptGcpDecrypter {
+            client: Some(client),
+            operation_states: vec![OperationState::Pending; expected.layer_operations.len()],
+            expected,
+            delivery_sha384: "0c".repeat(48),
+        }
     }
 
-    #[tokio::test]
-    async fn unrelated_ciphertext_is_rejected_before_sdk_and_correct_operation_is_one_use() {
-        let (mut decrypter, _) = guard_fixture();
+    #[test]
+    fn operation_plan_rejects_empty_over_budget_duplicate_and_malformed_entries() {
+        let decrypter = guard_fixture();
+        for change in [
+            "empty",
+            "zero-budget",
+            "over-budget",
+            "duplicate",
+            "layer",
+            "packet",
+        ] {
+            let mut expected = decrypter.expected.clone();
+            match change {
+                "empty" => expected.layer_operations.clear(),
+                "zero-budget" => expected.operation_limit = 0,
+                "over-budget" => expected.operation_limit = 1,
+                "duplicate" => expected.layer_operations[1].layer_index = 0,
+                "layer" => expected.layer_operations[0].layer_digest_sha256 = "bad".into(),
+                "packet" => expected.layer_operations[0].ciphertext_sha384 = "bad".into(),
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                validate_configuration(&expected).err(),
+                Some(CredentialError::InvalidConfiguration),
+                "{change}"
+            );
+        }
+        let mut expected = decrypter.expected.clone();
+        expected.layer_operations[1].layer_digest_sha256 =
+            expected.layer_operations[0].layer_digest_sha256.clone();
+        expected.layer_operations[1].ciphertext_sha384 =
+            expected.layer_operations[0].ciphertext_sha384.clone();
+        assert!(validate_configuration(&expected).is_ok());
+    }
+
+    #[test]
+    fn two_preapproved_layer_guards_complete_under_the_same_configured_key() {
+        let mut decrypter = guard_fixture();
+        assert!(!decrypter.all_operations_succeeded());
+        let (client, position) = decrypter
+            .start_operation(0, &"11".repeat(32), b"wrapped-layer-key")
+            .unwrap();
+        assert!(!decrypter.all_operations_succeeded());
+        decrypter.finish_operation(client, position);
+        assert!(!decrypter.all_operations_succeeded());
+        let (client, position) = decrypter
+            .start_operation(2, &"12".repeat(32), b"second-wrapped-layer-key")
+            .unwrap();
+        assert!(!decrypter.all_operations_succeeded());
+        decrypter.finish_operation(client, position);
+        assert!(decrypter.all_operations_succeeded());
+    }
+
+    #[test]
+    fn repeating_a_completed_operation_poison_remaining_preparation() {
+        let mut decrypter = guard_fixture();
+        let (client, position) = decrypter
+            .start_operation(0, &"11".repeat(32), b"wrapped-layer-key")
+            .unwrap();
+        decrypter.finish_operation(client, position);
         assert_eq!(
-            decrypter.decrypt_once(b"unapproved-ciphertext").await.err(),
-            Some(CredentialError::InvalidCiphertext)
-        );
-        drop(decrypter.start_operation(b"wrapped-layer-key").unwrap());
-        assert_eq!(
-            decrypter.decrypt_once(b"wrapped-layer-key").await.err(),
+            decrypter
+                .start_operation(0, &"11".repeat(32), b"wrapped-layer-key")
+                .err(),
             Some(CredentialError::AlreadyUsed)
         );
+        assert_eq!(
+            decrypter
+                .start_operation(2, &"12".repeat(32), b"second-wrapped-layer-key")
+                .err(),
+            Some(CredentialError::AttemptUnavailable)
+        );
+        assert!(!decrypter.all_operations_succeeded());
     }
 
     #[tokio::test]
-    async fn clock_failure_expiry_and_rollback_reject_before_sdk() {
-        let (mut decrypter, clock) = guard_fixture();
-        *clock.0.lock().unwrap() = Err(CredentialClockError::Unavailable);
+    async fn unknown_layer_digest_or_packet_rejects_before_sdk_and_poison_attempt() {
+        for (index, digest, ciphertext, error) in [
+            (
+                1,
+                "11".repeat(32),
+                b"wrapped-layer-key".as_slice(),
+                CredentialError::ScopeMismatch,
+            ),
+            (
+                0,
+                "ff".repeat(32),
+                b"wrapped-layer-key".as_slice(),
+                CredentialError::ScopeMismatch,
+            ),
+            (
+                0,
+                "11".repeat(32),
+                b"unapproved-ciphertext".as_slice(),
+                CredentialError::InvalidCiphertext,
+            ),
+            (
+                0,
+                "11".repeat(32),
+                b"".as_slice(),
+                CredentialError::InvalidCiphertext,
+            ),
+        ] {
+            let mut decrypter = guard_fixture();
+            assert_eq!(
+                decrypter
+                    .decrypt_layer_once(index, &digest, ciphertext)
+                    .await
+                    .err(),
+                Some(error)
+            );
+            assert_eq!(
+                decrypter
+                    .start_operation(2, &"12".repeat(32), b"second-wrapped-layer-key")
+                    .err(),
+                Some(CredentialError::AttemptUnavailable)
+            );
+            assert!(!decrypter.all_operations_succeeded());
+        }
+    }
+
+    #[test]
+    fn losing_in_flight_client_prevents_remaining_operations_and_completion() {
+        let mut decrypter = guard_fixture();
+        let (client, _) = decrypter
+            .start_operation(0, &"11".repeat(32), b"wrapped-layer-key")
+            .unwrap();
+        // This is the guard state left by cancellation or an SDK failure.
+        drop(client);
         assert_eq!(
-            decrypter.decrypt_once(b"wrapped-layer-key").await.err(),
-            Some(CredentialError::ClockUnavailable)
+            decrypter
+                .start_operation(2, &"12".repeat(32), b"second-wrapped-layer-key")
+                .err(),
+            Some(CredentialError::AttemptUnavailable)
         );
-        *clock.0.lock().unwrap() = Ok(1030);
-        assert_eq!(
-            decrypter.decrypt_once(b"wrapped-layer-key").await.err(),
-            Some(CredentialError::Expired)
-        );
-        *clock.0.lock().unwrap() = Ok(1029);
-        assert_eq!(
-            decrypter.decrypt_once(b"wrapped-layer-key").await.err(),
-            Some(CredentialError::ClockRegression)
-        );
-        *clock.0.lock().unwrap() = Ok(u64::MAX);
-        assert_eq!(
-            decrypter.decrypt_once(b"wrapped-layer-key").await.err(),
-            Some(CredentialError::ClockOutOfRange)
-        );
+        assert!(!decrypter.all_operations_succeeded());
     }
 }

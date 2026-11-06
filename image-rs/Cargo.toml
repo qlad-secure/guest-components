@@ -56,6 +56,7 @@ url = "2.5.4"
 walkdir = "2"
 xattr = "1"
 zstd = "0.13"
+zeroize = { workspace = true, optional = true }
 
 [build-dependencies]
 anyhow.workspace = true
@@ -68,6 +69,7 @@ ring.workspace = true
 rsa.workspace = true
 rstest.workspace = true
 serial_test = "4.0.1"
+openssl = { workspace = true, features = ["vendored"] }
 strum.workspace = true
 tempfile.workspace = true
 testcontainers.workspace = true
@@ -75,6 +77,16 @@ test-utils = { path = "libs/test-utils" }
 tokio = { workspace = true, features = ["process"] }
 
 [features]
+# Linux-only immutable byte containers; no preparation/provenance authority.
+launch-preparation = []
+# Offline pinned Cosign verification; no registry/keyless policy fallback.
+launch-preparation-signature = ["launch-preparation", "dep:sigstore"]
+# Bounded encrypted TAR verification/private staging; no rootfs launch authority.
+launch-preparation-content = ["launch-preparation", "dep:zeroize", "ocicrypt-rs/block-cipher-ring"]
+# Fixed-origin HTTPS digest reads; no discovery, auth realm or transport fallback.
+launch-preparation-registry = ["launch-preparation", "dep:reqwest", "reqwest/rustls", "dep:zeroize"]
+# Signed candidate/static ELF checks only; no mount, lease or launch authority.
+launch-preparation-executable = ["launch-preparation-content"]
 default = [
     "signature-cosign-rustls",
     "keywrap-grpc",

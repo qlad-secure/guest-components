@@ -23,13 +23,28 @@ fn key() -> Ed25519KeyPair {
     Ed25519KeyPair::from_pkcs8(encoded.as_ref()).unwrap()
 }
 
-struct Fixture {
-    recorder: LaunchRecorder,
-    proof: Ed25519KeyPair,
-    public: kbs_types::TeePubKey,
+pub(crate) struct Fixture {
+    pub(crate) recorder: LaunchRecorder,
+    pub(crate) proof: Ed25519KeyPair,
+    pub(crate) public: kbs_types::TeePubKey,
+    pub(crate) authority: Ed25519KeyPair,
+    pub(crate) signed_grant: Vec<u8>,
 }
 impl Fixture {
     fn new() -> Self {
+        Self::new_with_manifest("02".repeat(32))
+    }
+    fn new_with_manifest(manifest_sha256: String) -> Self {
+        Self::new_with_image_policy(manifest_sha256, "06".repeat(48))
+    }
+    fn new_with_image_policy(manifest_sha256: String, image_policy_sha384: String) -> Self {
+        Self::new_with_effective_spec(manifest_sha256, image_policy_sha384, "03".repeat(48))
+    }
+    fn new_with_effective_spec(
+        manifest_sha256: String,
+        image_policy_sha384: String,
+        effective_launch_sha384: String,
+    ) -> Self {
         let keys = LaunchKeys::generate().unwrap();
         let public = keys.keywrap_public_key().unwrap();
         let authority = key();
@@ -53,11 +68,11 @@ impl Fixture {
                 boot_id: "boot".into(),
                 channel_key_sha384: hash(&keys.recorder_public_key()),
                 bootstrap_context_sha384: "01".repeat(48),
-                selected_manifest_sha256: "02".repeat(32),
-                effective_launch_sha384: "03".repeat(48),
+                selected_manifest_sha256: manifest_sha256,
+                effective_launch_sha384,
                 profile_sha384: "04".repeat(48),
                 launch_policy_sha384: "05".repeat(48),
-                image_policy_sha384: "06".repeat(48),
+                image_policy_sha384,
                 challenge_sha384: "07".repeat(48),
             },
         };
@@ -91,7 +106,7 @@ impl Fixture {
             signature,
         })
         .unwrap();
-        let mut recorder = keys.into_recorder(wire, config, 100).unwrap();
+        let mut recorder = keys.into_recorder(wire.clone(), config).unwrap();
         let nonce = format!("onb17-launch-v1:{}", "0a".repeat(48));
         let runtime = serde_json_canonicalizer::to_vec(
             &json!({"tee-pubkey":public,"nonce":nonce,"additional-evidence":""}),
@@ -103,10 +118,42 @@ impl Fixture {
             recorder,
             proof,
             public,
+            authority,
+            signed_grant: wire,
         }
     }
-    async fn ready() -> Self {
-        let mut f = Self::new();
+    pub(crate) async fn ready() -> Self {
+        Self::finish_ready(Self::new()).await
+    }
+    #[allow(dead_code)] // Used only by the optional preparation source harness.
+    pub(crate) async fn ready_with_manifest(manifest_sha256: String) -> Self {
+        Self::finish_ready(Self::new_with_manifest(manifest_sha256)).await
+    }
+    #[allow(dead_code)] // Optional source harness pins policy before grant signing.
+    pub(crate) async fn ready_with_image_policy(
+        manifest_sha256: String,
+        image_policy_sha384: String,
+    ) -> Self {
+        Self::finish_ready(Self::new_with_image_policy(
+            manifest_sha256,
+            image_policy_sha384,
+        ))
+        .await
+    }
+    #[allow(dead_code)] // Optional checked-runtime harness fixes the digest before signing.
+    pub(crate) async fn ready_with_effective_spec(
+        manifest_sha256: String,
+        image_policy_sha384: String,
+        effective_launch_sha384: String,
+    ) -> Self {
+        Self::finish_ready(Self::new_with_effective_spec(
+            manifest_sha256,
+            image_policy_sha384,
+            effective_launch_sha384,
+        ))
+        .await
+    }
+    async fn finish_ready(mut f: Self) -> Self {
         let fake = SoftwareAttester::new(&f.recorder);
         f.recorder.collect_with(&fake).await.unwrap();
         let r = &f.recorder;
@@ -127,7 +174,7 @@ impl Fixture {
         f.recorder.resource_decision_request(&request).unwrap();
         f
     }
-    fn expectations(&self) -> AggregateExpectations {
+    pub(crate) fn expectations(&self) -> AggregateExpectations {
         let r = &self.recorder;
         let g = r.client.grant();
         AggregateExpectations {
@@ -162,7 +209,7 @@ impl Fixture {
             },
         }
     }
-    fn pin_and_sign(&mut self) -> Vec<u8> {
+    pub(crate) fn pin_and_sign(&mut self) -> Vec<u8> {
         let expected = self.expectations();
         let signature = hex(self
             .proof
@@ -176,7 +223,7 @@ impl Fixture {
         self.recorder.pin_aggregate_expectations(expected).unwrap();
         bytes
     }
-    fn response(&self, aggregate: &[u8], jwe: &[u8]) -> Vec<u8> {
+    pub(crate) fn response(&self, aggregate: &[u8], jwe: &[u8]) -> Vec<u8> {
         let r = &self.recorder;
         let expected = r.expected.as_ref().unwrap();
         let s = &expected.expected;
@@ -250,7 +297,7 @@ impl Attester for SoftwareAttester {
 
 /// RSA-OAEP and GC AES-GCM encryption using the shared 0.15 JWE wire format.
 /// This is an encryption fixture, not a KBS resource-backend publication.
-fn fixture_jwe(public: &kbs_types::TeePubKey, plaintext: &[u8]) -> Vec<u8> {
+pub(crate) fn fixture_jwe(public: &kbs_types::TeePubKey, plaintext: &[u8]) -> Vec<u8> {
     let kbs_types::TeePubKey::RSA { k_mod, k_exp, .. } = public else {
         panic!("RSA fixture expected")
     };
@@ -308,15 +355,16 @@ pub(crate) async fn credential_fixture_with_scope(
 ) -> (AttemptCredential, [u8; 32], [u8; 32], LaunchBinding, String) {
     let mut f = Fixture::ready().await;
     let aggregate = f.pin_and_sign();
-    let authority = f.recorder.config.grant.authority_public_key;
-    let producer = f.recorder.config.kbs_proof_public_key;
-    let binding = f.recorder.client.grant().binding().clone();
-    let grant_digest = f.recorder.client.grant().grant_digest().to_owned();
+    let authority = f.authority.public_key().as_ref().try_into().unwrap();
+    let producer = f.proof.public_key().as_ref().try_into().unwrap();
+    let raw: Signed<LaunchGrant> = serde_json::from_slice(&f.signed_grant).unwrap();
+    let binding = raw.statement.binding.clone();
+    let grant_digest = raw.statement.digest_sha384().unwrap();
     let jwe = fixture_jwe(&f.public, plaintext);
     let response = f.response(&aggregate, &jwe);
     (
         f.recorder
-            .decrypt_credential_response(&response, &aggregate, 100)
+            .decrypt_credential_response(&response, &aggregate)
             .unwrap(),
         authority,
         producer,
@@ -390,7 +438,7 @@ async fn actual_rsa_jwe_decryption_yields_one_attempt_bound_credential() {
     let response = f.response(&aggregate, &jwe);
     let credential = f
         .recorder
-        .decrypt_credential_response(&response, &aggregate, 199)
+        .decrypt_credential_response(&response, &aggregate)
         .unwrap();
     assert_eq!(credential.binding(), f.recorder.client.grant().binding());
     assert_eq!(
@@ -408,24 +456,18 @@ async fn actual_rsa_jwe_decryption_yields_one_attempt_bound_credential() {
     assert_eq!(credential.into_secret().as_slice(), b"fixture-secret-only");
     assert_eq!(
         f.recorder
-            .decrypt_credential_response(&response, &aggregate, 199)
+            .decrypt_credential_response(&response, &aggregate)
             .err(),
         Some(RecorderError::AlreadyConsumed)
     );
 }
 
 #[tokio::test]
-async fn signature_expiry_ciphertext_and_aead_tampering_never_yield_a_secret() {
+async fn signature_ciphertext_and_aead_tampering_never_yield_a_secret() {
     let mut f = Fixture::ready().await;
     let aggregate = f.pin_and_sign();
     let jwe = fixture_jwe(&f.public, b"fixture-secret-only");
     let response = f.response(&aggregate, &jwe);
-    assert!(
-        f.recorder
-            .decrypt_credential_response(&response, &aggregate, 200)
-            .is_err()
-    );
-    assert!(!f.recorder.consumed);
     let mut forged: Value = serde_json::from_slice(&response).unwrap();
     let mut signed: Value = serde_json::from_slice(
         &STANDARD
@@ -437,33 +479,36 @@ async fn signature_expiry_ciphertext_and_aead_tampering_never_yield_a_secret() {
     forged["signed_delivery_b64"] = STANDARD.encode(serde_json::to_vec(&signed).unwrap()).into();
     assert!(
         f.recorder
-            .decrypt_credential_response(&serde_json::to_vec(&forged).unwrap(), &aggregate, 199)
+            .decrypt_credential_response(&serde_json::to_vec(&forged).unwrap(), &aggregate)
             .is_err()
     );
+    assert!(!f.recorder.consumed);
     let mut changed: Value = serde_json::from_slice(&jwe).unwrap();
     changed["tag"] = URL_SAFE_NO_PAD.encode([0; 16]).into();
     let changed = serde_json::to_vec(&changed).unwrap();
     let mut substituted: Value = serde_json::from_slice(&response).unwrap();
     substituted["jwe_b64"] = STANDARD.encode(&changed).into();
     assert!(matches!(
-        f.recorder.decrypt_credential_response(
-            &serde_json::to_vec(&substituted).unwrap(),
-            &aggregate,
-            199
-        ),
+        f.recorder
+            .decrypt_credential_response(&serde_json::to_vec(&substituted).unwrap(), &aggregate),
         Err(RecorderError::Client(_))
     ));
+    assert!(!f.recorder.consumed);
     let signed_changed = f.response(&aggregate, &changed);
     assert_eq!(
         f.recorder
-            .decrypt_credential_response(&signed_changed, &aggregate, 199)
+            .decrypt_credential_response(&signed_changed, &aggregate)
             .err(),
         Some(RecorderError::InvalidCredential)
     );
-    assert!(
+    // Once an authenticated producer delivery is opened, even failed AEAD is
+    // terminal. A later valid response cannot create a second consume attempt.
+    assert!(f.recorder.consumed);
+    assert_eq!(
         f.recorder
-            .decrypt_credential_response(&response, &aggregate, 199)
-            .is_ok()
+            .decrypt_credential_response(&response, &aggregate)
+            .err(),
+        Some(RecorderError::AlreadyConsumed)
     );
 }
 
@@ -491,7 +536,7 @@ async fn unsupported_headers_unknown_fields_and_wrong_recipient_are_rejected() {
     let signed_foreign = f.response(&aggregate, &foreign);
     assert_eq!(
         f.recorder
-            .decrypt_credential_response(&signed_foreign, &aggregate, 199)
+            .decrypt_credential_response(&signed_foreign, &aggregate)
             .err(),
         Some(RecorderError::InvalidCredential)
     );

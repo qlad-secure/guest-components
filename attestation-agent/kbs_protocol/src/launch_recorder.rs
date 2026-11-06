@@ -105,12 +105,12 @@ impl LaunchKeys {
             .export_pubkey()
             .map_err(|_| RecorderError::Crypto)
     }
-    /// The trusted owner supplies its decision time, never a host/RPC timestamp.
+    /// Authenticate the authority grant without relying on a guest wall clock.
+    /// Live time is checked by the authority before its admission is committed.
     pub fn into_recorder(
         self,
         signed_grant: Vec<u8>,
         config: RecorderConfig,
-        trusted_now: u64,
     ) -> Result<LaunchRecorder, RecorderError> {
         validate_config(&config)?;
         if config.kbs_proof_public_key == [0; 32]
@@ -130,10 +130,9 @@ impl LaunchKeys {
         let canonical =
             serde_json_canonicalizer::to_vec(&legacy_key).map_err(|_| RecorderError::Crypto)?;
         let keywrap_sha384 = hash(&canonical);
-        let client = ClientProtocol::new(
+        let client = ClientProtocol::new_authority_time(
             signed_grant,
             &config.grant,
-            trusted_now,
             self.recorder,
             legacy_key,
             config.expected_init,
@@ -322,12 +321,12 @@ impl LaunchRecorder {
         )?)
     }
 
-    /// The trusted owner must read its own clock for this new consume operation.
+    /// Authenticate historical authority/KBS evidence before opening one secret.
+    /// CDH separately requires a fresh gate-minted admission for using it.
     pub fn decrypt_credential_response(
         &mut self,
         response_json: &[u8],
         aggregate_json: &[u8],
-        trusted_now: u64,
     ) -> Result<AttemptCredential, RecorderError> {
         if self.consumed {
             return Err(RecorderError::AlreadyConsumed);
@@ -344,12 +343,14 @@ impl LaunchRecorder {
         };
         // Authenticate the actual producer and exact ciphertext/context before
         // parsing/decrypting a JWE; AEAD alone does not authenticate its sender.
-        let response = self.client.verify_credential_response(
+        let response = self.client.verify_credential_response_historical(
             response_json,
             aggregate_json,
             &delivery,
-            trusted_now,
         )?;
+        // An authenticated delivery consumes this recorder even when its JWE
+        // is malformed or fails decryption. It can never yield another secret.
+        self.consumed = true;
         let jwe = strict_jwe(response.jwe_bytes())?;
         let secret = Zeroizing::new(
             self.keywrap
@@ -359,7 +360,6 @@ impl LaunchRecorder {
         if secret.is_empty() || secret.len() > MAX_CREDENTIAL_BYTES {
             return Err(RecorderError::InvalidCredential);
         }
-        self.consumed = true;
         Ok(AttemptCredential {
             binding: self.client.grant().binding().clone(),
             grant_digest: self.client.grant().grant_digest().into(),

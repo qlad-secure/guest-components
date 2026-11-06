@@ -53,7 +53,9 @@ jose-jwk = "0.1.2"
 jose-jws = "0.1.2"
 kms = { path = "../kms", default-features = false, features = ["kbs"] }
 kbs_protocol = { path = "../../attestation-agent/kbs_protocol", default-features = false, features = ["launch-recorder"], optional = true }
+execution-proof-client = { path = "../../../execution-proof-prototype/client", optional = true }
 execution-proof-contract = { path = "../../../execution-proof-prototype/contract", optional = true }
+execution-proof-handoff = { path = "../../../execution-proof-prototype/handoff", optional = true }
 sha2 = { workspace = true, optional = true }
 libcryptsetup-rs = { version = "0.13.1", optional = true, features = ["mutex"] }
 nix.workspace = true
@@ -100,7 +102,11 @@ tokio = { workspace = true, features = ["rt", "macros"] }
 default = ["aliyun", "kbs", "bin", "ttrpc", "grpc", "cli", "mlkem"]
 
 # Attempt-owned memory-only GCP credentials; no global initialization or files.
-launch-credential = ["kms/launch-credential", "dep:kbs_protocol", "dep:execution-proof-contract", "dep:sha2"]
+launch-credential = ["kms/launch-credential", "dep:kbs_protocol", "dep:execution-proof-contract", "dep:execution-proof-handoff", "dep:sha2"]
+launch-preparation = ["launch-credential"]
+launch-preparation-content = ["launch-preparation", "image-rs/launch-preparation-signature", "image-rs/launch-preparation-content"]
+launch-preparation-runtime = ["launch-preparation-content", "image-rs/launch-preparation-registry", "dep:execution-proof-client", "tokio/time"]
+launch-preparation-executable = ["launch-preparation-runtime", "image-rs/launch-preparation-executable"]
 
 # support aliyun stacks (KMS, ..)
 aliyun = ["kms/aliyun"]
