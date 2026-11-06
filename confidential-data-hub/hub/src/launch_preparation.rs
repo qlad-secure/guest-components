@@ -23,6 +23,9 @@ pub mod runtime;
 #[cfg(feature = "launch-preparation-content")]
 #[path = "launch_preparation/staging.rs"]
 mod staging;
+#[cfg(feature = "launch-preparation-custody")]
+#[path = "launch_preparation/provenance.rs"]
+mod provenance;
 #[cfg(all(test, feature = "launch-preparation-content"))]
 pub(crate) use content::fixture;
 #[cfg(feature = "launch-preparation-content")]

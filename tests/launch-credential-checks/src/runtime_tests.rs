@@ -1088,4 +1088,482 @@ mod checked {
         attempt.cancel_and_wait().await.unwrap();
         assert_eq!(parent.children(), 0);
     }
+    #[cfg(feature = "launch-preparation-erofs")]
+    mod erofs_tests {
+        use super::*;
+        #[cfg(feature = "launch-preparation-offer")]
+        mod offer_tests {
+            include!("runtime_offer_tests.rs");
+        }
+        use image_rs::preparation::{
+            erofs_builder::{ErofsBuildLimits, TrustedErofsBuilder},
+            rootfs_staging::BuilderInputLimits,
+        };
+        use std::{fs::File, path::PathBuf};
+        fn limits() -> ErofsBuildLimits {
+            ErofsBuildLimits {
+                input: BuilderInputLimits {
+                    tar_bytes: 1 << 20,
+                    inodes: 64,
+                    live_file_bytes: 1 << 20,
+                },
+                output_bytes: 1 << 20,
+                tool_bytes: 4 << 20,
+                address_space_bytes: 128 << 20,
+                cpu_seconds: 2,
+                wall_time: Duration::from_secs(5),
+            }
+        }
+        fn builder(limits: ErofsBuildLimits) -> TrustedErofsBuilder {
+            let path = PathBuf::from(
+                std::env::var_os("ONB17_EROFS_MKFS")
+                    .expect("provide pinned static native mkfs.erofs fixture"),
+            );
+            let hash = Sha384::digest(std::fs::read(&path).unwrap()).into();
+            TrustedErofsBuilder::new(File::open(path).unwrap(), hash, limits).unwrap()
+        }
+        #[tokio::test]
+        async fn erofs_runtime_retains_actual_backing_and_exact_retry_does_no_work() {
+            let server = Server::new();
+            let image =
+                ContentFixture::new_with_tar(2, true, &server.repository(), tar(&elf(), 0o755));
+            let signature = server.image(&image);
+            let parent = StagingFixtureParent::new();
+            let factory = RuntimeFactory::new(server.client(), 1, Duration::from_secs(15)).unwrap();
+            let (checked, recorder, signer) =
+                checked_inputs(&image, &parent, signature, spec("/")).await;
+            let mut attempt = factory
+                .begin_erofs_attempt(
+                    ErofsRuntimeAttemptConfig {
+                        checked,
+                        builder: builder(limits()),
+                    },
+                    recorder,
+                )
+                .unwrap();
+            let mut delivery = signer.delivery(attempt.challenge_nonce());
+            let trace = Arc::new(Mutex::new(Trace::default()));
+            assert!(attempt.summary().is_err());
+            assert_eq!(
+                attempt
+                    .prepare_fixture(delivery.borrowed(), image.replies(), trace.clone())
+                    .await,
+                Ok(ContentBinding::FirstChecked)
+            );
+            let summary = attempt.summary().unwrap();
+            assert_eq!(summary.backing().inodes(), 2);
+            assert!(summary.backing().byte_len() >= 8192);
+            assert_eq!(summary.executable().executable_sha384(), hash384(&elf()));
+            assert_eq!(parent.children(), 1);
+            let requests = server.requests();
+            assert_eq!(
+                attempt.prepare(delivery.borrowed()).await,
+                Ok(ContentBinding::Historical)
+            );
+            assert_eq!(attempt.summary().unwrap(), summary);
+            assert_eq!(trace.lock().unwrap().calls.len(), 2);
+            assert_eq!(server.requests(), requests);
+            delivery.receipt.push(b' ');
+            assert_eq!(
+                attempt.prepare(delivery.borrowed()).await,
+                Err(RuntimeError::Conflict)
+            );
+            assert!(attempt.summary().is_err());
+            attempt.cancel_and_wait().await.unwrap();
+            assert_eq!(parent.children(), 0);
+            assert_eq!(
+                attempt.prepare(delivery.borrowed()).await,
+                Err(RuntimeError::Unavailable)
+            );
+        }
+        #[tokio::test]
+        async fn erofs_runtime_failed_builder_is_terminal_without_second_unwrap() {
+            let server = Server::new();
+            let image =
+                ContentFixture::new_with_tar(1, false, &server.repository(), tar(&elf(), 0o755));
+            let signature = server.image(&image);
+            let parent = StagingFixtureParent::new();
+            let factory = RuntimeFactory::new(server.client(), 1, Duration::from_secs(15)).unwrap();
+            let (checked, recorder, signer) =
+                checked_inputs(&image, &parent, signature, spec("/")).await;
+            let mut small = limits();
+            small.output_bytes = 4096;
+            let mut attempt = factory
+                .begin_erofs_attempt(
+                    ErofsRuntimeAttemptConfig {
+                        checked,
+                        builder: builder(small),
+                    },
+                    recorder,
+                )
+                .unwrap();
+            let delivery = signer.delivery(attempt.challenge_nonce());
+            let trace = Arc::new(Mutex::new(Trace::default()));
+            assert_eq!(
+                attempt
+                    .prepare_fixture(delivery.borrowed(), image.replies(), trace.clone())
+                    .await,
+                Err(RuntimeError::BackingRejected)
+            );
+            assert!(attempt.summary().is_err());
+            let requests = server.requests();
+            assert_eq!(
+                attempt.prepare(delivery.borrowed()).await,
+                Err(RuntimeError::Unavailable)
+            );
+            assert_eq!(trace.lock().unwrap().calls.len(), 1);
+            assert_eq!(server.requests(), requests);
+            attempt.cancel_and_wait().await.unwrap();
+            assert_eq!(parent.children(), 0);
+        }
+        #[tokio::test]
+        async fn erofs_runtime_cancelled_publication_retains_capacity_until_actual_cleanup() {
+            let server = Server::new();
+            let image =
+                ContentFixture::new_with_tar(1, false, &server.repository(), tar(&elf(), 0o755));
+            let signature = server.image(&image);
+            let parent = StagingFixtureParent::new();
+            let factory = RuntimeFactory::new(server.client(), 1, Duration::from_secs(30)).unwrap();
+            let (checked, recorder, signer) =
+                checked_inputs(&image, &parent, signature.clone(), spec("/")).await;
+            let mut attempt = factory
+                .begin_erofs_attempt(
+                    ErofsRuntimeAttemptConfig {
+                        checked,
+                        builder: builder(limits()),
+                    },
+                    recorder,
+                )
+                .unwrap();
+            let delivery = signer.delivery(attempt.challenge_nonce());
+            let (reached, staged) = tokio::sync::oneshot::channel();
+            let (release, wait) = std::sync::mpsc::channel();
+            attempt.set_stage_barrier(reached, wait);
+            let mut preparation = Box::pin(attempt.prepare_fixture(
+                delivery.borrowed(),
+                image.replies(),
+                Arc::new(Mutex::new(Trace::default())),
+            ));
+            tokio::select! {r=&mut preparation=>panic!("actor escaped publication barrier: {r:?}"),r=staged=>r.unwrap()}
+            drop(preparation);
+            assert!(attempt.summary().is_err());
+            assert_eq!(parent.children(), 1);
+            let (checked, recorder, _) =
+                checked_inputs(&image, &parent, signature, spec("/")).await;
+            assert!(matches!(
+                factory.begin_erofs_attempt(
+                    ErofsRuntimeAttemptConfig {
+                        checked,
+                        builder: builder(limits())
+                    },
+                    recorder
+                ),
+                Err(RuntimeError::Busy)
+            ));
+            release.send(()).unwrap();
+            attempt.cancel_and_wait().await.unwrap();
+            assert_eq!(parent.children(), 0);
+        }
+        #[tokio::test]
+        async fn erofs_runtime_inflight_cancel_kills_reaps_and_cleans_before_drain_returns() {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let helper = std::env::temp_dir().join(format!(
+                "erofs-runtime-child-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir(&helper).unwrap();
+            let source = helper.join("hang.c");
+            let program = helper.join("hang");
+            let marker = helper.join("child.pid");
+            let pending_marker = helper.join("child.pending");
+            let code = format!(
+                "#include <stdio.h>\n#include <unistd.h>\nint main(void){{FILE*f=fopen({:?},\"w\");if(!f)return 1;if(fprintf(f,\"%d\\n\",getpid())<0||fclose(f))return 2;if(rename({:?},{:?}))return 3;for(;;)pause();}}",
+                pending_marker.to_str().unwrap(),
+                pending_marker.to_str().unwrap(),
+                marker.to_str().unwrap()
+            );
+            std::fs::write(&source, code).unwrap();
+            let built = std::process::Command::new("cc")
+                .args(["-static", "-O2"])
+                .arg(&source)
+                .arg("-o")
+                .arg(&program)
+                .output()
+                .unwrap();
+            assert!(built.status.success());
+            let hash = Sha384::digest(std::fs::read(&program).unwrap()).into();
+            let mut caps = limits();
+            caps.wall_time = Duration::from_secs(10);
+            let hanging =
+                TrustedErofsBuilder::new(File::open(&program).unwrap(), hash, caps).unwrap();
+            let server = Server::new();
+            let image =
+                ContentFixture::new_with_tar(1, false, &server.repository(), tar(&elf(), 0o755));
+            let signature = server.image(&image);
+            let parent = StagingFixtureParent::new();
+            let factory = RuntimeFactory::new(server.client(), 1, Duration::from_secs(30)).unwrap();
+            let (checked, recorder, signer) =
+                checked_inputs(&image, &parent, signature, spec("/")).await;
+            let mut attempt = factory
+                .begin_erofs_attempt(
+                    ErofsRuntimeAttemptConfig {
+                        checked,
+                        builder: hanging,
+                    },
+                    recorder,
+                )
+                .unwrap();
+            let delivery = signer.delivery(attempt.challenge_nonce());
+            let trace = Arc::new(Mutex::new(Trace::default()));
+            let mut preparation = Box::pin(attempt.prepare_fixture(
+                delivery.borrowed(),
+                image.replies(),
+                trace.clone(),
+            ));
+            let reached = async {
+                loop {
+                    if marker.exists() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+            };
+            tokio::select! {r=&mut preparation=>panic!("hung child returned before cancellation: {r:?}"),_=tokio::time::timeout(Duration::from_secs(10),reached)=>{assert!(marker.exists());}}
+            assert_eq!(parent.children(), 2); // retained staging and private builder scratch
+            drop(preparation);
+            assert!(attempt.summary().is_err());
+            attempt.cancel_and_wait().await.unwrap();
+            assert_eq!(parent.children(), 0);
+            assert_eq!(trace.lock().unwrap().calls.len(), 1);
+            let pid: i32 = std::fs::read_to_string(&marker)
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            let mut status = 0;
+            // SAFETY: status is writable; waitpid targets only this fixture's child.
+            assert_eq!(unsafe { image_rs_nix_waitpid(pid, &mut status, 1) }, -1);
+            assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(10)); // ECHILD
+            std::fs::remove_dir_all(helper).unwrap();
+        }
+
+        #[cfg(feature = "launch-preparation-mount")]
+        fn mount_limits() -> image_rs::preparation::erofs_mount::ErofsMountLimits {
+            use image_rs::preparation::erofs_mount::{ErofsMountLimits, MountedViewLimits};
+            ErofsMountLimits {
+                view: MountedViewLimits {
+                    inodes: 32,
+                    live_file_bytes: 1 << 20,
+                    path_bytes: 256,
+                    path_components: 16,
+                    directory_entry_bytes: 16384,
+                },
+                backing_bytes: 1 << 20,
+                ramfs_data_bytes: 1 << 20,
+                wall_time: Duration::from_secs(5),
+            }
+        }
+        #[cfg(feature = "launch-preparation-mount")]
+        #[tokio::test]
+        async fn mounted_runtime_invalid_limits_reject_before_network_or_content() {
+            let server = Server::new();
+            let image =
+                ContentFixture::new_with_tar(1, false, &server.repository(), tar(&elf(), 0o755));
+            let signature = server.image(&image);
+            let parent = StagingFixtureParent::new();
+            let factory = RuntimeFactory::new(server.client(), 1, Duration::from_secs(10)).unwrap();
+            for case in 0..8 {
+                let (checked, recorder, _) =
+                    checked_inputs(&image, &parent, signature.clone(), spec("/")).await;
+                let mut cap = mount_limits();
+                match case {
+                    0 => cap.backing_bytes = 0,
+                    1 => cap.wall_time = Duration::ZERO,
+                    2 => cap.view.inodes = 0,
+                    3 => cap.view.live_file_bytes = 0,
+                    4 => cap.view.path_bytes = 0,
+                    5 => cap.view.path_components = 0,
+                    6 => cap.view.directory_entry_bytes = 0,
+                    _ => cap.ramfs_data_bytes = 0,
+                }
+                assert!(matches!(
+                    factory.begin_mounted_attempt(
+                        MountedRuntimeAttemptConfig {
+                            erofs: ErofsRuntimeAttemptConfig {
+                                checked,
+                                builder: builder(limits())
+                            },
+                            mount_limits: cap
+                        },
+                        recorder
+                    ),
+                    Err(RuntimeError::InvalidConfiguration)
+                ));
+            }
+            assert!(server.requests().is_empty());
+            assert_eq!(parent.children(), 0);
+        }
+        #[cfg(feature = "launch-preparation-mount")]
+        #[tokio::test]
+        async fn mounted_runtime_failed_mount_or_view_is_terminal_and_never_reunwraps() {
+            let server = Server::new();
+            let image =
+                ContentFixture::new_with_tar(1, false, &server.repository(), tar(&elf(), 0o755));
+            let signature = server.image(&image);
+            let parent = StagingFixtureParent::new();
+            let factory = RuntimeFactory::new(server.client(), 1, Duration::from_secs(15)).unwrap();
+            let (checked, recorder, signer) =
+                checked_inputs(&image, &parent, signature, spec("/")).await;
+            let mut caps = mount_limits();
+            caps.view.inodes = 1; // Two-inode fixture cannot pass mounted inventory even on a privileged host.
+            let mut attempt = factory
+                .begin_mounted_attempt(
+                    MountedRuntimeAttemptConfig {
+                        erofs: ErofsRuntimeAttemptConfig {
+                            checked,
+                            builder: builder(limits()),
+                        },
+                        mount_limits: caps,
+                    },
+                    recorder,
+                )
+                .unwrap();
+            let delivery = signer.delivery(attempt.challenge_nonce());
+            let trace = Arc::new(Mutex::new(Trace::default()));
+            assert!(attempt.summary().is_err());
+            assert_eq!(
+                attempt
+                    .prepare_fixture(delivery.borrowed(), image.replies(), trace.clone())
+                    .await,
+                Err(RuntimeError::MountRejected)
+            );
+            assert!(attempt.summary().is_err());
+            let requests = server.requests();
+            assert_eq!(
+                attempt.prepare(delivery.borrowed()).await,
+                Err(RuntimeError::Unavailable)
+            );
+            assert_eq!(server.requests(), requests);
+            assert_eq!(trace.lock().unwrap().calls.len(), 1);
+            attempt.cancel_and_wait().await.unwrap();
+            assert_eq!(parent.children(), 0);
+        }
+        // This separate opt-in native gate must run with initial-userns mount
+        // privilege and registered EROFS. It never treats missing privilege as a skip.
+        #[cfg(feature = "launch-preparation-mount-native")]
+        #[tokio::test]
+        async fn native_mounted_runtime_retains_view_and_historical_delivery_without_rebuild() {
+            let server = Server::new();
+            let image =
+                ContentFixture::new_with_tar(2, true, &server.repository(), tar(&elf(), 0o755));
+            let signature = server.image(&image);
+            let parent = StagingFixtureParent::new();
+            let factory = RuntimeFactory::new(server.client(), 1, Duration::from_secs(20)).unwrap();
+            let (checked, recorder, signer) =
+                checked_inputs(&image, &parent, signature, spec("/")).await;
+            let mut attempt = factory
+                .begin_mounted_attempt(
+                    MountedRuntimeAttemptConfig {
+                        erofs: ErofsRuntimeAttemptConfig {
+                            checked,
+                            builder: builder(limits()),
+                        },
+                        mount_limits: mount_limits(),
+                    },
+                    recorder,
+                )
+                .unwrap();
+            let mut delivery = signer.delivery(attempt.challenge_nonce());
+            let trace = Arc::new(Mutex::new(Trace::default()));
+            assert_eq!(
+                attempt
+                    .prepare_fixture(delivery.borrowed(), image.replies(), trace.clone())
+                    .await,
+                Ok(ContentBinding::FirstChecked)
+            );
+            let summary = attempt.summary().unwrap();
+            assert_eq!(summary.view().backing().inodes(), 2);
+            assert_eq!(summary.view().backing_adapter(), "private-ro-ramfs-v1");
+            assert_ne!(summary.view().mount_id(), 0);
+            assert_eq!(
+                summary.view().executable().executable_sha384(),
+                hash384(&elf())
+            );
+            #[cfg(feature = "launch-preparation-offer")]
+            {
+                use execution_proof_handoff::{
+                    fd_transport::{FdExpectation, PrivateFdChannel, SendOutcome},
+                    rootfs_offer::{ReceiverTransfer, RootfsOfferDraft, SenderStatus},
+                };
+                let expected: Signed<AdmissionAuthorizationV1> =
+                    serde_json::from_slice(&delivery.receipt).unwrap();
+                let decode = |hex: &str| -> [u8; 48] {
+                    std::array::from_fn(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
+                };
+                let (producer, mut receiver) = PrivateFdChannel::pair().unwrap();
+                let sent = attempt.begin_rootfs_offer(producer, 1 << 20).await.unwrap();
+                let (wire, descriptor) = receiver
+                    .try_receive(FdExpectation::One)
+                    .unwrap()
+                    .unwrap()
+                    .into_parts();
+                let draft = RootfsOfferDraft::decode(&wire, 1 << 20).unwrap();
+                assert_eq!(&draft, sent.draft());
+                assert_eq!(
+                    draft.backing().sha384,
+                    *summary.view().backing().image_sha384()
+                );
+                let origin = image_rs::preparation::SealedImageBytes::from_received_fd(
+                    descriptor.unwrap(),
+                    1 << 20,
+                    draft.backing().sha384,
+                )
+                .unwrap();
+                assert_eq!(origin.byte_len(), summary.view().backing().byte_len());
+                let mut received = ReceiverTransfer::new(
+                    decode(&expected.statement.context_sha384),
+                    decode(&expected.statement.binding.effective_launch_sha384),
+                    1 << 20,
+                )
+                .unwrap();
+                received.receive(draft).unwrap();
+                assert_eq!(
+                    receiver.try_send(&received.receipt().unwrap().encode(), None),
+                    Ok(SendOutcome::Sent),
+                );
+                assert_eq!(
+                    attempt.poll_rootfs_offer().await.unwrap().status(),
+                    SenderStatus::EnvelopeReceived,
+                );
+                assert_eq!(
+                    attempt.retry_rootfs_offer().await.unwrap().status(),
+                    SenderStatus::EnvelopeReceived,
+                );
+                assert!(receiver.try_receive(FdExpectation::One).unwrap().is_none());
+                assert_eq!(attempt.summary().unwrap(), summary);
+            }
+            let requests = server.requests();
+            assert_eq!(
+                attempt.prepare(delivery.borrowed()).await,
+                Ok(ContentBinding::Historical)
+            );
+            assert_eq!(attempt.summary().unwrap(), summary);
+            assert_eq!(trace.lock().unwrap().calls.len(), 2);
+            assert_eq!(server.requests(), requests);
+            delivery.receipt.push(b' ');
+            assert_eq!(
+                attempt.prepare(delivery.borrowed()).await,
+                Err(RuntimeError::Conflict)
+            );
+            assert!(attempt.summary().is_err());
+            attempt.cancel_and_wait().await.unwrap();
+            assert_eq!(parent.children(), 0);
+        }
+        unsafe extern "C" {
+            #[link_name = "waitpid"]
+            fn image_rs_nix_waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
+        }
+    }
 }

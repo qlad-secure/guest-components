@@ -64,7 +64,7 @@ impl RuntimeFactory {
 /// No constructor, conversion or Deref from the legacy staging-only runtime.
 /// A checked summary is published only after this attempt's actor validates the
 /// required spec and actual staged executable snapshot.
-pub struct CheckedRuntimeAttempt(RuntimeAttempt);
+pub struct CheckedRuntimeAttempt(pub(super) RuntimeAttempt);
 impl CheckedRuntimeAttempt {
     pub fn challenge_nonce(&self) -> &str {
         self.0.challenge_nonce()

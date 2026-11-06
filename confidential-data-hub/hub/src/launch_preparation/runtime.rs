@@ -10,8 +10,10 @@
 //! back to the async owner. Dropping preparation closes its local keepalive;
 //! `cancel_and_wait` drains the retained worker. Drop cannot synchronously join a
 //! running blocking task, but that task keeps the permit through actual cleanup.
-//! Daemon startup, immutable custody, P, leases, and start permission are outside
-//! this API.
+//! The optional offer feature adds a capacity-one command queue to that same
+//! owner. It sends only the sealed origin and returns non-authorizing status.
+//! The base runtime does not authorize task start. Opt-in custody adds receiver
+//! validation and P/ACK coordination; the receiver owns the usable lease.
 
 use super::*;
 #[cfg(feature = "launch-preparation-executable")]
@@ -19,6 +21,30 @@ use super::*;
 mod executable;
 #[cfg(feature = "launch-preparation-executable")]
 pub use executable::{CheckedRuntimeAttempt, CheckedRuntimeAttemptConfig, CheckedRuntimeSummary};
+#[cfg(feature = "launch-preparation-erofs")]
+#[path = "runtime_erofs.rs"]
+mod erofs;
+#[cfg(feature = "launch-preparation-erofs")]
+pub use erofs::{ErofsRuntimeAttempt, ErofsRuntimeAttemptConfig, ErofsRuntimeSummary};
+#[cfg(feature = "launch-preparation-offer")]
+#[path = "runtime_offer.rs"]
+mod offer;
+#[cfg(feature = "launch-preparation-offer")]
+use offer::ActorCommand;
+#[cfg(feature = "launch-preparation-offer")]
+pub use offer::{RootfsOfferError, RootfsOfferObservation};
+#[cfg(feature = "launch-preparation-custody")]
+#[path = "runtime_custody.rs"]
+mod custody;
+#[cfg(feature = "launch-preparation-custody")]
+pub use custody::{
+    CustodyProducerError, CustodyProducerLimits, CustodyProducerStatus, CustodyRuntimeAttempt,
+};
+#[cfg(not(feature = "launch-preparation-offer"))]
+type ActorCommand = ();
+#[cfg(feature = "launch-preparation-mount")]
+#[path = "runtime_mount.rs"]
+mod mounted;
 use execution_proof_client::MAX_CREDENTIAL_RESPONSE_BYTES;
 use execution_proof_contract::MAX_WIRE_BYTES;
 use execution_proof_handoff::admission::{GuestAdmissionConfig, GuestAdmissionGate};
@@ -28,6 +54,8 @@ use image_rs::preparation::{
     rootfs_staging::{PrivateStagingParent, RootfsStagingLimits},
 };
 use kbs_protocol::launch_recorder::LaunchRecorder;
+#[cfg(feature = "launch-preparation-mount")]
+pub use mounted::{MountedRuntimeAttempt, MountedRuntimeAttemptConfig, MountedRuntimeSummary};
 use std::{sync::Arc, time::Duration};
 use tokio::{
     sync::{oneshot, OwnedSemaphorePermit, Semaphore},
@@ -45,6 +73,10 @@ pub enum RuntimeError {
     PreparationRejected,
     #[cfg(feature = "launch-preparation-executable")]
     ExecutableRejected,
+    #[cfg(feature = "launch-preparation-erofs")]
+    BackingRejected,
+    #[cfg(feature = "launch-preparation-mount")]
+    MountRejected,
     RegistryRejected,
     Deadline,
     WorkerUnavailable,
@@ -62,6 +94,10 @@ impl fmt::Display for RuntimeError {
             Self::PreparationRejected => "preparation runtime content or staging rejected",
             #[cfg(feature = "launch-preparation-executable")]
             Self::ExecutableRejected => "preparation runtime spec or executable rejected",
+            #[cfg(feature = "launch-preparation-erofs")]
+            Self::BackingRejected => "preparation runtime EROFS backing rejected",
+            #[cfg(feature = "launch-preparation-mount")]
+            Self::MountRejected => "preparation runtime actual mount or view rejected",
             Self::RegistryRejected => "preparation runtime registry response rejected",
             Self::Deadline => "preparation runtime workflow deadline exceeded",
             Self::WorkerUnavailable => "preparation runtime worker unavailable",
@@ -158,12 +194,18 @@ impl RuntimeFactory {
                 signature_artifact_sha256,
                 #[cfg(feature = "launch-preparation-executable")]
                 executable: None,
+                #[cfg(feature = "launch-preparation-erofs")]
+                builder: None,
+                #[cfg(feature = "launch-preparation-mount")]
+                mount: None,
                 permit,
             })),
             delivery: None,
             worker: None,
             #[cfg(test)]
             stage_barrier: None,
+            #[cfg(all(test, feature = "launch-preparation-offer"))]
+            offer_barrier: None,
         })
     }
 }
@@ -213,6 +255,10 @@ struct Pending {
     signature_artifact_sha256: String,
     #[cfg(feature = "launch-preparation-executable")]
     executable: Option<executable::RequiredExecution>,
+    #[cfg(feature = "launch-preparation-erofs")]
+    builder: Option<image_rs::preparation::erofs_builder::TrustedErofsBuilder>,
+    #[cfg(feature = "launch-preparation-mount")]
+    mount: Option<image_rs::preparation::erofs_mount::ErofsMountLimits>,
     // Last: all owned attempt/credential state must drop before capacity returns.
     permit: OwnedSemaphorePermit,
 }
@@ -227,6 +273,10 @@ struct Workflow {
     layers: Vec<Blob>,
     #[cfg(feature = "launch-preparation-executable")]
     executable: Option<executable::RequiredExecution>,
+    #[cfg(feature = "launch-preparation-erofs")]
+    builder: Option<image_rs::preparation::erofs_builder::TrustedErofsBuilder>,
+    #[cfg(feature = "launch-preparation-mount")]
+    mount: Option<image_rs::preparation::erofs_mount::ErofsMountLimits>,
     _permit: OwnedSemaphorePermit,
 }
 struct Blob {
@@ -272,11 +322,19 @@ impl RuntimePreparationSummary {
 
 struct ActorSnapshot {
     staging: RuntimePreparationSummary,
+    #[cfg(feature = "launch-preparation-erofs")]
+    backing: Option<image_rs::preparation::erofs_builder::VerifiedErofsSummary>,
+    #[cfg(feature = "launch-preparation-mount")]
+    mounted: Option<image_rs::preparation::erofs_mount::MountedRootfsSummary>,
     #[cfg(feature = "launch-preparation-executable")]
     executable: Option<image_rs::preparation::rootfs_staging::CheckedStagingExecutable>,
 }
 impl ActorSnapshot {
-    fn capture(workflow: &Workflow) -> Result<Self, RuntimeError> {
+    fn capture(
+        workflow: &mut Workflow,
+        _deadline: Instant,
+        _closed: &std::sync::mpsc::Receiver<ActorCommand>,
+    ) -> Result<Self, RuntimeError> {
         #[cfg(feature = "launch-preparation-executable")]
         let executable = workflow
             .executable
@@ -288,10 +346,53 @@ impl ActorSnapshot {
                     .map_err(|_| RuntimeError::ExecutableRejected)
             })
             .transpose()?;
+        let staging = RuntimePreparationSummary::capture(&workflow.attempt)?;
+        #[cfg(feature = "launch-preparation-erofs")]
+        let backing = workflow
+            .builder
+            .as_ref()
+            .map(|builder| {
+                workflow
+                    .attempt
+                    .build_staged_rootfs(builder, &|| {
+                        Instant::now() >= _deadline
+                            || !matches!(
+                                _closed.try_recv(),
+                                Err(std::sync::mpsc::TryRecvError::Empty)
+                            )
+                    })
+                    .map_err(|_| RuntimeError::BackingRejected)
+            })
+            .transpose()?;
+        #[cfg(feature = "launch-preparation-mount")]
+        let mounted = workflow
+            .mount
+            .as_ref()
+            .map(|limits| {
+                let required = workflow
+                    .executable
+                    .as_ref()
+                    .ok_or(RuntimeError::InvalidConfiguration)?;
+                workflow
+                    .attempt
+                    .mount_staged_rootfs(&required.spec, required.limits, *limits, &|| {
+                        Instant::now() >= _deadline
+                            || !matches!(
+                                _closed.try_recv(),
+                                Err(std::sync::mpsc::TryRecvError::Empty)
+                            )
+                    })
+                    .map_err(|_| RuntimeError::MountRejected)
+            })
+            .transpose()?;
         Ok(Self {
-            staging: RuntimePreparationSummary::capture(&workflow.attempt)?,
+            staging,
             #[cfg(feature = "launch-preparation-executable")]
             executable,
+            #[cfg(feature = "launch-preparation-erofs")]
+            backing,
+            #[cfg(feature = "launch-preparation-mount")]
+            mounted,
         })
     }
 }
@@ -299,7 +400,7 @@ impl ActorSnapshot {
 struct Retained {
     snapshot: ActorSnapshot,
     // Closing the only sender tells the bounded blocking owner to clean up.
-    _keepalive: std::sync::mpsc::Sender<()>,
+    _keepalive: std::sync::mpsc::SyncSender<ActorCommand>,
 }
 enum RuntimeState {
     Pending(Box<Pending>),
@@ -316,6 +417,8 @@ pub struct RuntimeAttempt {
     worker: Option<JoinHandle<()>>,
     #[cfg(test)]
     stage_barrier: Option<StageBarrier>,
+    #[cfg(all(test, feature = "launch-preparation-offer"))]
+    offer_barrier: Option<StageBarrier>,
 }
 #[cfg(test)]
 struct StageBarrier {
@@ -507,15 +610,17 @@ impl RuntimeAttempt {
         drop(cancel_content);
 
         let (send_summary, receive_summary) = oneshot::channel();
-        let (keepalive, close) = std::sync::mpsc::channel();
+        let (keepalive, close) = std::sync::mpsc::sync_channel(1);
         #[cfg(test)]
         let stage_barrier = self.stage_barrier.take();
+        #[cfg(all(test, feature = "launch-preparation-offer"))]
+        let offer_barrier = self.offer_barrier.take();
         self.worker = Some(tokio::task::spawn_blocking(move || {
             let staged = workflow
                 .attempt
                 .stage_rootfs()
                 .map_err(|_| RuntimeError::PreparationRejected)
-                .and_then(|_| ActorSnapshot::capture(&workflow));
+                .and_then(|_| ActorSnapshot::capture(&mut workflow, deadline, &close));
             let successful = staged.is_ok();
             #[cfg(test)]
             if let Some(barrier) = stage_barrier {
@@ -525,6 +630,14 @@ impl RuntimeAttempt {
             if send_summary.send(staged).is_ok() && successful {
                 // The sender remains local to the async preparation future
                 // until summary receipt succeeds, then belongs to Staged.
+                #[cfg(feature = "launch-preparation-offer")]
+                offer::serve(
+                    &mut workflow.attempt,
+                    &close,
+                    #[cfg(test)]
+                    offer_barrier,
+                );
+                #[cfg(not(feature = "launch-preparation-offer"))]
                 let _ = close.recv();
             }
             // Explicitly drop attempt before returning the permit, including
@@ -641,6 +754,10 @@ fn admit(mut pending: Pending, record: &DeliveryRecord) -> Result<Workflow, Runt
         layers: Vec::new(),
         #[cfg(feature = "launch-preparation-executable")]
         executable: pending.executable,
+        #[cfg(feature = "launch-preparation-erofs")]
+        builder: pending.builder,
+        #[cfg(feature = "launch-preparation-mount")]
+        mount: pending.mount,
         _permit: pending.permit,
     })
 }
