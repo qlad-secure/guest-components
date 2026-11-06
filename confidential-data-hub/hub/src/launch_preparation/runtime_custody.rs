@@ -368,6 +368,16 @@ impl CustodyRuntimeAttempt {
             .await
             .map_err(CustodyProducerError::Preparation)
     }
+    #[cfg(all(test, feature = "launch-preparation-custody-native"))]
+    pub(crate) async fn prepare_fixture(
+        &mut self,
+        delivery: RuntimeDelivery<'_>,
+        replies: Vec<fixture::Reply>,
+        trace: Arc<std::sync::Mutex<fixture::Trace>>,
+    ) -> Result<ContentBinding, CustodyProducerError> {
+        self.prepare_mode(delivery, ContentMode::Fixture { replies, trace })
+            .await
+    }
 }
 impl Drop for CustodyRuntimeAttempt {
     fn drop(&mut self) {

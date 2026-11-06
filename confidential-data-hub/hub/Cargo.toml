@@ -112,6 +112,7 @@ launch-preparation-erofs = ["launch-preparation-executable", "image-rs/launch-pr
 launch-preparation-mount = ["launch-preparation-erofs", "image-rs/launch-preparation-mount"]
 launch-preparation-offer = ["launch-preparation-erofs", "image-rs/launch-preparation-offer", "execution-proof-handoff/rootfs-transfer"]
 launch-preparation-custody = ["launch-preparation-offer", "image-rs/launch-preparation-custody", "execution-proof-handoff/rootfs-custody"]
+launch-preparation-custody-native = ["launch-preparation-custody", "image-rs/launch-preparation-receive"]
 
 # support aliyun stacks (KMS, ..)
 aliyun = ["kms/aliyun"]

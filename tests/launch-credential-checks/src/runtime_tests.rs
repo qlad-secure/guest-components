@@ -1091,6 +1091,10 @@ mod checked {
     #[cfg(feature = "launch-preparation-erofs")]
     mod erofs_tests {
         use super::*;
+        #[cfg(feature = "launch-preparation-custody-native")]
+        mod custody_tests {
+            include!("runtime_custody_tests.rs");
+        }
         #[cfg(feature = "launch-preparation-offer")]
         mod offer_tests {
             include!("runtime_offer_tests.rs");
