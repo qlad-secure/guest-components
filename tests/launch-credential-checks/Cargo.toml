@@ -30,6 +30,7 @@ launch-preparation-offer = ["launch-preparation-erofs", "image-rs/launch-prepara
 launch-preparation-custody = ["launch-preparation-offer", "image-rs/launch-preparation-custody", "execution-proof-handoff/rootfs-custody"]
 launch-preparation-custody-native = ["launch-preparation-custody", "image-rs/launch-preparation-receive"]
 launch-preparation-mount-native = ["launch-preparation-mount"]
+launch-preparation-final-task-native = ["launch-preparation-custody-native", "launch-preparation-mount-native"]
 
 [dependencies]
 openssl = { version = "=0.10.81", optional = true }
@@ -64,7 +65,7 @@ rstest = "=0.26.1"
 rsa = { version = "=0.9.10", features = ["sha2"] }
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("pqc-experimental"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("pqc-experimental", "final-task", "protected-export", "protected-export-gcp-tdx"))'] }
 
 [[bin]]
 name = "onb17-kata-custody-receiver-fixture"

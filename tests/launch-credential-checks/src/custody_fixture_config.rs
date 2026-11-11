@@ -5,8 +5,8 @@
 //! not an alternative production trust source or an RPC configuration path.
 
 use execution_proof_contract::{
-    GrantExpectations, LaunchGrant,
     policy_receipt::{AggregateExpectations, LaunchPolicyAggregateV1},
+    GrantExpectations, LaunchGrant,
 };
 use execution_proof_handoff::admission::GuestAdmissionConfig;
 use image_rs::preparation::launch_spec::{
@@ -22,6 +22,17 @@ pub const FIXTURE_CONFIG_BYTES: usize = 1 << 20;
 pub enum FixtureMode {
     RejectBeforeMount,
     NativePositive,
+    NativeFinalTask,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskCase {
+    Positive,
+    CancelBeforeStart,
+    SpecMismatch,
+    PostExecFailure,
+    CaptureRejected,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -47,6 +58,8 @@ pub struct FixtureReceiverWire {
     pub seccomp_syscalls: Vec<String>,
     pub control_directory: PathBuf,
     pub mode: FixtureMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_case: Option<TaskCase>,
 }
 impl FixtureReceiverWire {
     pub fn from_config(
@@ -77,6 +90,7 @@ impl FixtureReceiverWire {
             seccomp_syscalls: policy.seccomp_syscalls.clone(),
             control_directory,
             mode,
+            task_case: None,
         }
     }
     pub fn admission(&self) -> GuestAdmissionConfig {
@@ -133,6 +147,7 @@ impl FixtureReceiverWire {
     }
     fn validate(&self) -> Result<(), &'static str> {
         if self.version != 1
+            || (self.mode == FixtureMode::NativeFinalTask) != self.task_case.is_some()
             || self.candidate_spec.len() > 16384
             || self.seccomp_syscalls.len() > 32
             || self

@@ -1095,6 +1095,10 @@ mod checked {
         mod custody_tests {
             include!("runtime_custody_tests.rs");
         }
+        #[cfg(feature = "launch-preparation-final-task-native")]
+        mod final_task_tests {
+            include!("runtime_final_task_tests.rs");
+        }
         #[cfg(feature = "launch-preparation-offer")]
         mod offer_tests {
             include!("runtime_offer_tests.rs");

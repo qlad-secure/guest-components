@@ -84,6 +84,9 @@ fn run(control: &mut Option<PathBuf>) -> Result<()> {
         .begin(channel, fixture.admission(), spec, limits(fixture.mode))
         .context("receiver begin")?;
     match fixture.mode {
+        FixtureMode::NativeFinalTask => {
+            bail!("final-task mode requires the dedicated Kata final-task fixture")
+        }
         FixtureMode::RejectBeforeMount => {
             run_rejection(&mut owner, &factory, deadline)?;
             drop(owner);

@@ -1,5 +1,5 @@
 use super::*;
-use crate::custody_fixture_config::{FixtureMode, FixtureReceiverWire};
+use crate::custody_fixture_config::{FixtureMode, FixtureReceiverWire, TaskCase};
 use execution_proof_handoff::startup::{
     LaunchedRole, PinnedRoleExecutable, RoleCommand, launch_kata_role,
 };
@@ -23,7 +23,7 @@ const ROLE_BYTES: u64 = 512 << 20;
 const FLOW_TIME: Duration = Duration::from_secs(10);
 static CONTROL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-struct ControlDirectory(PathBuf);
+pub(super) struct ControlDirectory(PathBuf);
 impl ControlDirectory {
     fn new() -> Self {
         for _ in 0..128 {
@@ -44,7 +44,7 @@ impl ControlDirectory {
         self.0.join(name).is_file()
     }
     #[cfg(feature = "launch-preparation-mount-native")]
-    fn signal(&self, name: &str) {
+    pub(super) fn signal(&self, name: &str) {
         OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -79,38 +79,54 @@ fn hex_digest(value: &[u8]) -> String {
     value.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-struct CustodyFixture {
+pub(super) struct CustodyFixture {
     // The child is killed/reaped before config/control backing can disappear.
     role: LaunchedRole,
-    attempt: CustodyRuntimeAttempt,
-    server: Server,
+    pub(super) attempt: CustodyRuntimeAttempt,
+    pub(super) server: Server,
     image: ContentFixture,
-    parent: StagingFixtureParent,
+    pub(super) parent: StagingFixtureParent,
     factory: RuntimeFactory,
     signature: String,
     delivery: Delivery,
-    trace: Arc<Mutex<Trace>>,
+    #[cfg(feature = "launch-preparation-final-task-native")]
+    pub(super) grant_sha384: String,
+    pub(super) trace: Arc<Mutex<Trace>>,
     _configuration: SealedImageBytes,
-    control: ControlDirectory,
+    pub(super) control: ControlDirectory,
 }
 impl CustodyFixture {
     async fn new(mode: FixtureMode) -> Self {
+        Self::new_with_elf(mode, None, elf()).await
+    }
+    #[cfg(feature = "launch-preparation-final-task-native")]
+    pub(super) async fn new_with_case(case: TaskCase) -> Self {
+        Self::new_with_elf(FixtureMode::NativeFinalTask, Some(case), task_elf(case)).await
+    }
+    async fn new_with_elf(
+        mode: FixtureMode,
+        task_case: Option<TaskCase>,
+        payload: Vec<u8>,
+    ) -> Self {
         let server = Server::new();
         let image =
-            ContentFixture::new_with_tar(1, false, &server.repository(), tar(&elf(), 0o755));
+            ContentFixture::new_with_tar(1, false, &server.repository(), tar(&payload, 0o755));
         let signature = server.image(&image);
         let parent = StagingFixtureParent::new();
         let raw_spec = spec("/");
         let (checked, recorder, signer) =
             checked_inputs(&image, &parent, signature.clone(), raw_spec.clone()).await;
         let control = ControlDirectory::new();
-        let wire = FixtureReceiverWire::from_config(
+        let mut wire = FixtureReceiverWire::from_config(
             &checked.base.admission,
             &raw_spec,
             &checked.spec_policy,
             control.0.clone(),
             mode,
         );
+        wire.task_case = task_case;
+        #[cfg(feature = "launch-preparation-final-task-native")]
+        let grant_sha384 = hash384(&wire.expected_grant.signing_bytes().unwrap());
         let public_configuration = wire.encode().unwrap();
         let configuration = SealedImageBytes::from_bytes(&public_configuration, 1 << 20).unwrap();
         let helper_path =
@@ -146,7 +162,12 @@ impl CustodyFixture {
             FLOW_TIME,
         )
         .unwrap();
-        let factory = RuntimeFactory::new(server.client(), 1, Duration::from_secs(30)).unwrap();
+        let workflow_time = Duration::from_secs(if mode == FixtureMode::NativeFinalTask {
+            60
+        } else {
+            30
+        });
+        let factory = RuntimeFactory::new(server.client(), 1, workflow_time).unwrap();
         let mut attempt = factory
             .begin_custody_attempt(
                 ErofsRuntimeAttemptConfig {
@@ -182,13 +203,15 @@ impl CustodyFixture {
             factory,
             signature,
             delivery,
+            #[cfg(feature = "launch-preparation-final-task-native")]
+            grant_sha384,
             trace,
             _configuration: configuration,
             control,
         }
     }
     #[cfg(feature = "launch-preparation-mount-native")]
-    async fn until_status(&mut self, expected: CustodyProducerStatus) {
+    pub(super) async fn until_status(&mut self, expected: CustodyProducerStatus) {
         let deadline = Instant::now() + FLOW_TIME;
         while self.attempt.status() != expected {
             assert!(
@@ -200,7 +223,7 @@ impl CustodyFixture {
         }
     }
     #[cfg(feature = "launch-preparation-mount-native")]
-    async fn marker(&self, name: &str) {
+    pub(super) async fn marker(&self, name: &str) {
         let deadline = Instant::now() + FLOW_TIME;
         while !self.control.contains(name) {
             if self.control.contains("result.json") {
@@ -216,16 +239,19 @@ impl CustodyFixture {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
     }
-    async fn result(&mut self) -> serde_json::Value {
+    pub(super) async fn result(&mut self) -> serde_json::Value {
         let deadline = Instant::now() + FLOW_TIME;
         while !self.control.contains("result.json") {
             assert!(Instant::now() < deadline, "Kata helper result deadline");
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
-        self.role.wait(FLOW_TIME).unwrap();
-        self.control.result()
+        let result = self.control.result();
+        self.role
+            .wait(FLOW_TIME)
+            .unwrap_or_else(|error| panic!("Kata helper failed: {error:?}; {result}"));
+        result
     }
-    async fn assert_capacity_returned(&self) {
+    pub(super) async fn assert_capacity_returned(&self) {
         let (checked, recorder, _) =
             checked_inputs(&self.image, &self.parent, self.signature.clone(), spec("/")).await;
         let mut next = self
@@ -339,4 +365,21 @@ async fn native_custody_cross_process_commits_one_lease_and_retries_without_remo
     assert_eq!(result["target_executed"], false);
     fixture.assert_capacity_returned().await;
     println!("ONB17_CUSTODY_RESULT={result}");
+}
+
+#[cfg(feature = "launch-preparation-final-task-native")]
+pub(super) fn task_elf(case: TaskCase) -> Vec<u8> {
+    let mut bytes = elf();
+    if case == TaskCase::PostExecFailure {
+        return bytes;
+    }
+    // x86_64 ET_EXEC: write the marker to stdout, then exit_group(0). The
+    // RIP-relative payload stays in the existing readonly executable segment.
+    let code = [
+        0xb8, 1, 0, 0, 0, 0xbf, 1, 0, 0, 0, 0x48, 0x8d, 0x35, 0x2f, 0, 0, 0, 0xba, 14, 0, 0, 0,
+        0x0f, 0x05, 0xb8, 0xe7, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05,
+    ];
+    bytes[256..256 + code.len()].copy_from_slice(&code);
+    bytes[320..334].copy_from_slice(b"ONB17_APP_RAN\n");
+    bytes
 }
