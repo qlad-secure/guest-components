@@ -412,7 +412,7 @@ struct StrictHeader {
     enc: String,
 }
 
-fn strict_jwe(bytes: &[u8]) -> Result<kbs_types::Response, RecorderError> {
+pub(super) fn strict_jwe(bytes: &[u8]) -> Result<kbs_types::Response, RecorderError> {
     if bytes.len() > MAX_CREDENTIAL_JWE_BYTES {
         return Err(RecorderError::TooLarge);
     }

@@ -23,6 +23,7 @@ cfg-if.workspace = true
 crypto.path = "../deps/crypto"
 hex.workspace = true
 iocuddle = { version = "0.3.0", optional = true }
+libc = { version = "0.2", optional = true }
 kbs-types.workspace = true
 occlum_dcap = { git = "https://github.com/occlum/occlum", tag = "v0.29.7", optional = true }
 pem-rfc7468 = { version = "1", optional = true, features = ["alloc"] }
@@ -94,6 +95,7 @@ all-attesters = [
 # generate TDX quotes with upstream kernels.
 tsm-report = ["tempfile"]
 tdx-attester = ["scroll", "tsm-report", "iocuddle", "zerocopy"]
+execution-quote-tdx = ["tdx-attester", "dep:libc"]
 tdx-attest-dcap-ioctls = ["tdx-attest-rs"]
 sgx-attester = ["occlum_dcap"]
 nvidia-attester = ["nv-attestation-sdk"]

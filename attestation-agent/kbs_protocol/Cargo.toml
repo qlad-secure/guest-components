@@ -66,6 +66,8 @@ required-features = ["bin"]
 [features]
 # Separate launch/credential protocol; no legacy token or Sample fallback.
 launch-recorder = ["dep:execution-proof-client", "dep:execution-proof-contract", "dep:legacy-kbs-types", "dep:ring", "serde_json_canonicalizer", "rust-crypto", "crypto/mlkem"]
+launch-recorder-gcp = ["launch-recorder"]
+launch-recorder-gcp-tdx = ["launch-recorder-gcp", "attester/execution-quote-tdx"]
 launch-recorder-tdx = ["launch-recorder", "attester/tdx-attester"]
 default = [
     "background_check",

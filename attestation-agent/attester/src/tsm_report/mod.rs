@@ -118,6 +118,46 @@ impl TsmReportPath {
 
         Ok(aux)
     }
+
+    #[cfg(feature = "execution-quote-tdx")]
+    pub(crate) fn execution_quote_bounded(
+        &self,
+        report_data: &[u8; 64],
+        maximum: usize,
+    ) -> Result<Vec<u8>, TsmReportError> {
+        use std::io::Read;
+
+        let limit = maximum
+            .checked_add(1)
+            .and_then(|value| u64::try_from(value).ok())
+            .ok_or_else(|| {
+                TsmReportError::Access(
+                    "outblob",
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "quote bound"),
+                )
+            })?;
+        std::fs::write(self.path.join("inblob"), report_data)
+            .map_err(|error| TsmReportError::Access("inblob", error))?;
+        let mut quote = Vec::new();
+        std::fs::File::open(self.path.join("outblob"))
+            .and_then(|file| file.take(limit).read_to_end(&mut quote))
+            .map_err(|error| TsmReportError::Access("outblob", error))?;
+        if quote.is_empty() || quote.len() > maximum {
+            return Err(TsmReportError::Access(
+                "outblob",
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "quote bound"),
+            ));
+        }
+        let generation = std::fs::read_to_string(self.path.join("generation"))
+            .map_err(|error| TsmReportError::Access("generation", error))?
+            .trim_matches('\n')
+            .parse::<u32>()
+            .map_err(TsmReportError::Parse)?;
+        if generation != 1 {
+            return Err(TsmReportError::InblobConflict(generation));
+        }
+        Ok(quote)
+    }
 }
 
 /// check_inblob_write_race checks that the returned outblob/auxblob
@@ -167,6 +207,44 @@ fn check_tsm_report_provider(
 mod tests {
     use super::*;
     use rstest::*;
+
+    #[cfg(feature = "execution-quote-tdx")]
+    #[test]
+    fn execution_quote_bounds_reads_and_rejects_generation_conflicts() {
+        let directory = tempfile::tempdir().unwrap();
+        let report = TsmReportPath {
+            path: directory.path().to_path_buf(),
+        };
+        std::fs::write(directory.path().join("generation"), b"1\n").unwrap();
+        std::fs::write(directory.path().join("outblob"), [9; 32]).unwrap();
+        assert_eq!(
+            report.execution_quote_bounded(&[7; 64], 32).unwrap(),
+            [9; 32]
+        );
+        assert_eq!(
+            std::fs::read(directory.path().join("inblob")).unwrap(),
+            [7; 64]
+        );
+        std::fs::write(directory.path().join("outblob"), [9; 33]).unwrap();
+        assert!(report.execution_quote_bounded(&[7; 64], 32).is_err());
+        std::fs::write(directory.path().join("outblob"), []).unwrap();
+        assert!(report.execution_quote_bounded(&[7; 64], 32).is_err());
+        std::fs::write(directory.path().join("outblob"), [9; 32]).unwrap();
+        std::fs::write(directory.path().join("generation"), b"2\n").unwrap();
+        assert!(matches!(
+            report.execution_quote_bounded(&[7; 64], 32),
+            Err(TsmReportError::InblobConflict(2))
+        ));
+        std::fs::write(directory.path().join("generation"), b"0\n").unwrap();
+        assert!(matches!(
+            report.execution_quote_bounded(&[7; 64], 32),
+            Err(TsmReportError::InblobConflict(0))
+        ));
+        for name in ["inblob", "outblob", "generation"] {
+            std::fs::remove_file(directory.path().join(name)).unwrap();
+        }
+        drop(report);
+    }
 
     #[rstest]
     #[case("provider", "tdx_guest\n", false)]

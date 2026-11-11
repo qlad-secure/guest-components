@@ -421,6 +421,7 @@ dependencies = [
  "hyper-tls 0.5.0",
  "iocuddle 0.3.0",
  "kbs-types 0.18.0",
+ "libc",
  "num-traits",
  "nv-attestation-sdk",
  "occlum_dcap",

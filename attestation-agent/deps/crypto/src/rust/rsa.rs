@@ -49,6 +49,14 @@ impl RSAKeyPair {
         }
     }
 
+    /// Unwrap RSA-OAEP-256 for a caller that requires SHA-256 for OAEP and MGF1.
+    pub fn decrypt_oaep256(&self, ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+        Ok(Zeroizing::new(
+            self.private_key
+                .decrypt(Oaep::new::<rsa::sha2::Sha256>(), ciphertext)?,
+        ))
+    }
+
     pub fn n(&self) -> Vec<u8> {
         self.public_key.n().to_bytes_be()
     }
