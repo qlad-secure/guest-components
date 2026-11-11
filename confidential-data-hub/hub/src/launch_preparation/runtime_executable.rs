@@ -10,8 +10,8 @@ use image_rs::preparation::{
     static_elf::StaticElfLimits,
 };
 
-pub struct CheckedRuntimeAttemptConfig {
-    pub base: RuntimeAttemptConfig,
+pub struct CheckedRuntimeAttemptConfig<A = GuestAdmissionConfig> {
+    pub base: RuntimeAttemptConfig<A>,
     pub effective_spec: Vec<u8>,
     pub spec_policy: EffectiveSpecPolicy,
     pub spec_limits: EffectiveSpecLimits,
@@ -68,6 +68,15 @@ pub struct CheckedRuntimeAttempt(pub(super) RuntimeAttempt);
 impl CheckedRuntimeAttempt {
     pub fn challenge_nonce(&self) -> &str {
         self.0.challenge_nonce()
+    }
+
+    #[cfg(feature = "launch-preparation-runtime-gcp")]
+    pub fn gcp_admission_request(
+        &self,
+        aggregate: &[u8],
+        operation: execution_proof_contract::admission::gcp::GcpAdmissionOperation,
+    ) -> Result<Vec<u8>, RuntimeError> {
+        self.0.gcp_admission_request(aggregate, operation)
     }
 
     pub async fn prepare(

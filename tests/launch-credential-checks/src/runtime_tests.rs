@@ -1571,3 +1571,7 @@ mod checked {
         }
     }
 }
+
+#[cfg(feature = "launch-preparation-runtime-gcp")]
+#[path = "gcp_runtime_tests.rs"]
+mod gcp;

@@ -47,20 +47,29 @@ type ActorCommand = ();
 mod mounted;
 use execution_proof_client::MAX_CREDENTIAL_RESPONSE_BYTES;
 use execution_proof_contract::MAX_WIRE_BYTES;
+#[cfg(feature = "launch-preparation-runtime-gcp")]
+use execution_proof_handoff::admission::gcp::{GcpGuestAdmissionConfig, GcpGuestAdmissionGate};
 use execution_proof_handoff::admission::{GuestAdmissionConfig, GuestAdmissionGate};
 use image_rs::preparation::{
     manifest_signature::RequiredCosignPolicy,
     registry_ingress::TrustedRegistry,
     rootfs_staging::{PrivateStagingParent, RootfsStagingLimits},
 };
+#[cfg(feature = "launch-preparation-runtime-gcp")]
+use kbs_protocol::gcp_launch_recorder::GcpLaunchRecorder;
 use kbs_protocol::launch_recorder::LaunchRecorder;
+#[cfg(feature = "launch-preparation-runtime-gcp")]
+#[path = "runtime_gcp.rs"]
+mod gcp;
+#[cfg(feature = "launch-preparation-runtime-gcp")]
+pub use gcp::*;
 #[cfg(feature = "launch-preparation-mount")]
 pub use mounted::{MountedRuntimeAttempt, MountedRuntimeAttemptConfig, MountedRuntimeSummary};
 use std::{sync::Arc, time::Duration};
 use tokio::{
-    sync::{oneshot, OwnedSemaphorePermit, Semaphore},
+    sync::{OwnedSemaphorePermit, Semaphore, oneshot},
     task::JoinHandle,
-    time::{timeout_at, Instant},
+    time::{Instant, timeout_at},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -110,8 +119,8 @@ impl std::error::Error for RuntimeError {}
 
 /// Per-attempt trusted provisioning, not a host RPC or a received JSON schema.
 /// The ready recorder must already have independently pinned aggregate scope.
-pub struct RuntimeAttemptConfig {
-    pub admission: GuestAdmissionConfig,
+pub struct RuntimeAttemptConfig<A = GuestAdmissionConfig> {
+    pub admission: A,
     pub preparation: PreparationProfile,
     pub metadata_limits: PreparationLimits,
     pub content_limits: ImageContentLimits,
@@ -160,14 +169,31 @@ impl RuntimeFactory {
         recorder: LaunchRecorder,
     ) -> Result<RuntimeAttempt, RuntimeError> {
         validate_attempt_config(&config, self.resources.registry.repository())?;
+        let (admission, config) = split_config(config);
+        self.begin_owned_attempt(config, || {
+            let gate = GuestAdmissionGate::new(admission)
+                .map_err(|_| RuntimeError::InvalidConfiguration)?;
+            Ok(RuntimeAdmission::Legacy {
+                gate,
+                recorder: Box::new(recorder),
+            })
+        })
+    }
+
+    fn begin_owned_attempt(
+        &self,
+        config: RuntimeAttemptConfig<()>,
+        make_admission: impl FnOnce() -> Result<RuntimeAdmission, RuntimeError>,
+    ) -> Result<RuntimeAttempt, RuntimeError> {
         let permit = self
             .resources
             .active
             .clone()
             .try_acquire_owned()
             .map_err(|_| RuntimeError::Busy)?;
+        let admission = make_admission()?;
         let RuntimeAttemptConfig {
-            admission,
+            admission: (),
             preparation,
             metadata_limits,
             content_limits,
@@ -176,15 +202,12 @@ impl RuntimeFactory {
             signature_policy,
             signature_artifact_sha256,
         } = config;
-        let gate =
-            GuestAdmissionGate::new(admission).map_err(|_| RuntimeError::InvalidConfiguration)?;
-        let nonce = gate.challenge_nonce().to_owned();
+        let nonce = admission.challenge_nonce().to_owned();
         Ok(RuntimeAttempt {
             resources: self.resources.clone(),
             nonce,
             state: RuntimeState::Pending(Box::new(Pending {
-                gate,
-                recorder,
+                admission,
                 preparation,
                 metadata_limits,
                 content_limits,
@@ -243,9 +266,68 @@ impl DeliveryRecord {
     }
 }
 
+fn split_config<A>(config: RuntimeAttemptConfig<A>) -> (A, RuntimeAttemptConfig<()>) {
+    let RuntimeAttemptConfig {
+        admission,
+        preparation,
+        metadata_limits,
+        content_limits,
+        staging_parent,
+        staging_limits,
+        signature_policy,
+        signature_artifact_sha256,
+    } = config;
+    (
+        admission,
+        RuntimeAttemptConfig {
+            admission: (),
+            preparation,
+            metadata_limits,
+            content_limits,
+            staging_parent,
+            staging_limits,
+            signature_policy,
+            signature_artifact_sha256,
+        },
+    )
+}
+
+enum RuntimeAdmission {
+    Legacy {
+        gate: GuestAdmissionGate,
+        recorder: Box<LaunchRecorder>,
+    },
+    #[cfg(feature = "launch-preparation-runtime-gcp")]
+    Gcp {
+        gate: GcpGuestAdmissionGate,
+        recorder: Box<GcpLaunchRecorder>,
+        admission_policy_sha384: String,
+    },
+}
+impl RuntimeAdmission {
+    fn challenge_nonce(&self) -> &str {
+        match self {
+            Self::Legacy { gate, .. } => gate.challenge_nonce(),
+            #[cfg(feature = "launch-preparation-runtime-gcp")]
+            Self::Gcp { gate, .. } => gate.challenge_nonce(),
+        }
+    }
+    #[cfg(feature = "launch-preparation-custody")]
+    fn receiver_enrollment(
+        &self,
+        packet: execution_proof_handoff::startup::StartupBoundPacket,
+        channel: &execution_proof_handoff::startup::StartupBoundChannel,
+    ) -> Result<Vec<u8>, execution_proof_handoff::admission::ReceiverEnrollmentError> {
+        match self {
+            Self::Legacy { gate, .. } => gate.receiver_enrollment(packet, channel),
+            #[cfg(feature = "launch-preparation-runtime-gcp")]
+            Self::Gcp { gate, .. } => gate.receiver_enrollment(packet, channel),
+        }
+    }
+}
+
 struct Pending {
-    gate: GuestAdmissionGate,
-    recorder: LaunchRecorder,
+    admission: RuntimeAdmission,
     preparation: PreparationProfile,
     metadata_limits: PreparationLimits,
     content_limits: ImageContentLimits,
@@ -722,29 +804,52 @@ enum ContentMode {
     },
 }
 
-fn admit(mut pending: Pending, record: &DeliveryRecord) -> Result<Workflow, RuntimeError> {
-    pending
-        .gate
-        .verify_bundle(&record.grant, &record.aggregate, &record.receipt)
-        .map_err(|_| RuntimeError::AdmissionRejected)?;
-    let admission = pending
-        .gate
-        .take_accepted_attempt()
-        .map_err(|_| RuntimeError::AdmissionRejected)?;
-    let credential = pending
-        .recorder
-        .decrypt_credential_response(&record.credential, &record.aggregate)
-        .map_err(|_| RuntimeError::CredentialRejected)?;
-    let attempt = PreparationAttempt::new_with_staging(
-        admission,
-        credential,
-        pending.preparation,
-        pending.metadata_limits,
-        pending.content_limits,
-        pending.staging_parent,
-        pending.staging_limits,
-    )
-    .map_err(|_| RuntimeError::PreparationRejected)?;
+fn admit(pending: Pending, record: &DeliveryRecord) -> Result<Workflow, RuntimeError> {
+    let attempt = match pending.admission {
+        RuntimeAdmission::Legacy { gate, mut recorder } => {
+            gate.verify_bundle(&record.grant, &record.aggregate, &record.receipt)
+                .map_err(|_| RuntimeError::AdmissionRejected)?;
+            let admission = gate
+                .take_accepted_attempt()
+                .map_err(|_| RuntimeError::AdmissionRejected)?;
+            let credential = recorder
+                .decrypt_credential_response(&record.credential, &record.aggregate)
+                .map_err(|_| RuntimeError::CredentialRejected)?;
+            PreparationAttempt::new_with_staging(
+                admission,
+                credential,
+                pending.preparation,
+                pending.metadata_limits,
+                pending.content_limits,
+                pending.staging_parent,
+                pending.staging_limits,
+            )
+            .map_err(|_| RuntimeError::PreparationRejected)?
+        }
+        #[cfg(feature = "launch-preparation-runtime-gcp")]
+        RuntimeAdmission::Gcp {
+            gate, mut recorder, ..
+        } => {
+            gate.verify_bundle(&record.grant, &record.aggregate, &record.receipt)
+                .map_err(|_| RuntimeError::AdmissionRejected)?;
+            let admission = gate
+                .take_accepted_attempt()
+                .map_err(|_| RuntimeError::AdmissionRejected)?;
+            let credential = recorder
+                .decrypt_credential_response(&record.credential, &record.aggregate)
+                .map_err(|_| RuntimeError::CredentialRejected)?;
+            PreparationAttempt::new_gcp_with_staging(
+                admission,
+                credential,
+                pending.preparation,
+                pending.metadata_limits,
+                pending.content_limits,
+                pending.staging_parent,
+                pending.staging_limits,
+            )
+            .map_err(|_| RuntimeError::PreparationRejected)?
+        }
+    };
     Ok(Workflow {
         attempt,
         policy: Some(pending.signature_policy),

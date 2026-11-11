@@ -125,6 +125,30 @@ impl PreparationAttempt {
         Ok(attempt)
     }
 
+    #[cfg(feature = "launch-preparation-gcp")]
+    pub fn new_gcp_with_staging(
+        admission: AcceptedAttemptContext,
+        credential: kbs_protocol::gcp_launch_recorder::GcpAttemptCredential,
+        profile: PreparationProfile,
+        limits: PreparationLimits,
+        content_limits: ImageContentLimits,
+        parent: PrivateStagingParent,
+        staging_limits: RootfsStagingLimits,
+    ) -> Result<Self, PreparationError> {
+        staging_limits
+            .validate()
+            .map_err(|_| PreparationError::InvalidConfiguration)?;
+        let mut attempt =
+            Self::new_gcp_with_content(admission, credential, profile, limits, content_limits)?;
+        if let State::Pending(material) = &mut attempt.state {
+            material.staging = Some(StagingConfiguration {
+                parent,
+                limits: staging_limits,
+            });
+        }
+        Ok(attempt)
+    }
+
     /// Consume only the attempt's checked layers. State is terminal during all
     /// filesystem work; errors dispose the owned staging and admission. Exact
     /// retries return retained metadata without another extraction or unwrap.

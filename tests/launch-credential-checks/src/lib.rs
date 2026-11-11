@@ -24,3 +24,15 @@ pub mod launch_recorder;
 mod preparation_tests;
 #[cfg(all(test, feature = "launch-preparation-runtime"))]
 mod runtime_tests;
+
+#[cfg(feature = "launch-recorder-gcp")]
+#[path = "../../../attestation-agent/kbs_protocol/src/gcp_launch_recorder.rs"]
+pub mod gcp_launch_recorder;
+
+#[cfg(all(test, feature = "launch-credential-gcp"))]
+mod gcp_cdh_tests;
+
+#[cfg(all(test, feature = "launch-preparation-gcp"))]
+mod gcp_preparation_tests;
+#[cfg(all(test, feature = "launch-preparation-content-gcp"))]
+mod gcp_content_tests;

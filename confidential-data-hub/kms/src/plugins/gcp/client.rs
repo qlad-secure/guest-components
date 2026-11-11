@@ -11,6 +11,10 @@ use super::credential::parse_credential;
 use crate::plugins::_IN_GUEST_DEFAULT_KEY_PATH;
 use crate::{Annotations, Decrypter, Error, ProviderSettings, Result};
 
+#[cfg(feature = "launch-credential-gcp")]
+#[path = "attempt.rs"]
+mod attempt;
+
 const GCP_IN_GUEST_DEFAULT_KEY_PATH: &str = concatcp!(_IN_GUEST_DEFAULT_KEY_PATH, "/gcp");
 const GCP_CREDENTIAL_FILE_NAME: &str = "credential.json";
 

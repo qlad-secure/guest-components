@@ -190,9 +190,43 @@ impl BoundManifestPlan {
     }
 }
 
+enum StoredCredential {
+    Legacy(AttemptCredential),
+    #[cfg(feature = "launch-preparation-gcp")]
+    Gcp(kbs_protocol::gcp_launch_recorder::GcpAttemptCredential),
+}
+impl StoredCredential {
+    fn delivery_digest(&self) -> &str {
+        match self {
+            Self::Legacy(value) => value.delivery().digest_sha384(),
+            #[cfg(feature = "launch-preparation-gcp")]
+            Self::Gcp(value) => value.delivery().digest_sha384(),
+        }
+    }
+    #[cfg(feature = "launch-preparation-content")]
+    fn into_decrypter(
+        self,
+        expected: crate::launch_credential::TrustedGcpAttempt,
+        admission: &AcceptedAttemptContext,
+    ) -> Result<
+        crate::launch_credential::AttemptGcpDecrypter,
+        crate::launch_credential::CredentialError,
+    > {
+        match self {
+            Self::Legacy(value) => crate::launch_credential::AttemptGcpDecrypter::from_credential(
+                value, expected, admission,
+            ),
+            #[cfg(feature = "launch-preparation-gcp")]
+            Self::Gcp(value) => crate::launch_credential::AttemptGcpDecrypter::from_gcp_credential(
+                value, expected, admission,
+            ),
+        }
+    }
+}
+
 struct AttemptMaterial {
     admission: AcceptedAttemptContext,
-    credential: Option<AttemptCredential>,
+    credential: Option<StoredCredential>,
     profile: PreparationProfile,
     limits: PreparationLimits,
     #[cfg(feature = "launch-preparation-content")]
@@ -256,7 +290,56 @@ impl PreparationAttempt {
         Ok(Self {
             state: State::Pending(AttemptMaterial {
                 admission,
-                credential: Some(credential),
+                credential: Some(StoredCredential::Legacy(credential)),
+                profile,
+                limits,
+                #[cfg(feature = "launch-preparation-content")]
+                content_limits: None,
+                #[cfg(feature = "launch-preparation-content")]
+                staging: None,
+            }),
+        })
+    }
+
+    #[cfg(feature = "launch-preparation-gcp")]
+    pub fn new_gcp(
+        admission: AcceptedAttemptContext,
+        credential: kbs_protocol::gcp_launch_recorder::GcpAttemptCredential,
+        profile: PreparationProfile,
+        limits: PreparationLimits,
+    ) -> Result<Self, PreparationError> {
+        validate_configuration(&profile, &limits)?;
+        if credential
+            .boot_binding()
+            .digest_sha384()
+            .map_err(|_| PreparationError::ScopeMismatch)?
+            != profile.binding.profile_sha384
+        {
+            return Err(PreparationError::ScopeMismatch);
+        }
+        if credential.authority_key_sha384() != sha384(&profile.authority_public_key)
+            || admission.authority_key_sha384() != sha384(&profile.authority_public_key)
+            || credential.delivery().kbs_proof_key_sha384() != sha384(&profile.kbs_proof_public_key)
+            || admission.aggregate_key_sha384() != sha384(&profile.kbs_proof_public_key)
+            || credential.binding() != &profile.binding
+            || admission.binding() != &profile.binding
+            || credential.grant_digest() != profile.grant_sha384
+            || admission.grant_digest() != profile.grant_sha384
+            || credential.delivery().grant_digest() != profile.grant_sha384
+            || credential.delivery().aggregate_digest() != admission.aggregate_digest()
+            || credential.delivery().validity() != &profile.validity
+            || admission.validity() != &profile.validity
+            || credential.delivery().workflow_id() != profile.workflow_id
+            || admission.workflow_id() != profile.workflow_id
+            || credential.delivery().resource_path() != &profile.resource_path
+            || admission.resource_path() != &profile.resource_path
+        {
+            return Err(PreparationError::ScopeMismatch);
+        }
+        Ok(Self {
+            state: State::Pending(AttemptMaterial {
+                admission,
+                credential: Some(StoredCredential::Gcp(credential)),
                 profile,
                 limits,
                 #[cfg(feature = "launch-preparation-content")]
@@ -478,8 +561,7 @@ fn bind_metadata(
             .credential
             .as_ref()
             .ok_or(PreparationError::Unavailable)?
-            .delivery()
-            .digest_sha384()
+            .delivery_digest()
             .into(),
         layers,
     })

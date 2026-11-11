@@ -130,6 +130,22 @@ impl PreparationAttempt {
         Ok(attempt)
     }
 
+    #[cfg(feature = "launch-preparation-gcp")]
+    pub fn new_gcp_with_content(
+        admission: AcceptedAttemptContext,
+        credential: kbs_protocol::gcp_launch_recorder::GcpAttemptCredential,
+        profile: PreparationProfile,
+        limits: PreparationLimits,
+        content_limits: ImageContentLimits,
+    ) -> Result<Self, PreparationError> {
+        validate_content_limits(content_limits)?;
+        let mut attempt = Self::new_gcp(admission, credential, profile, limits)?;
+        if let State::Pending(material) = &mut attempt.state {
+            material.content_limits = Some(content_limits);
+        }
+        Ok(attempt)
+    }
+
     /// Own the actual requiring policy, pin it to admission, and verify claims
     /// from the exact cryptographically authenticated Cosign payload bytes.
     pub fn verify_image_signature(
@@ -286,12 +302,9 @@ impl PreparationAttempt {
             .credential
             .take()
             .ok_or(PreparationError::Unavailable)?;
-        let decrypter = AttemptGcpDecrypter::from_credential(
-            credential,
-            expected,
-            &signed.bound._material.admission,
-        )
-        .map_err(|_| PreparationError::ContentRejected)?;
+        let decrypter = credential
+            .into_decrypter(expected, &signed.bound._material.admission)
+            .map_err(|_| PreparationError::ContentRejected)?;
         let mut resolver = GcpResolver(decrypter);
         let checked = check_all_content(signed, operations, ciphertexts, &mut resolver).await?;
         self.state = State::ContentChecked(checked);
@@ -670,12 +683,9 @@ pub(crate) mod fixture {
                 .credential
                 .take()
                 .ok_or(PreparationError::Unavailable)?;
-            let _sdk = AttemptGcpDecrypter::from_credential(
-                credential,
-                expected,
-                &signed.bound._material.admission,
-            )
-            .map_err(|_| PreparationError::ContentRejected)?;
+            let _sdk = credential
+                .into_decrypter(expected, &signed.bound._material.admission)
+                .map_err(|_| PreparationError::ContentRejected)?;
             let mut resolver = LocalResolver {
                 expected: operations.len(),
                 replies: replies.into(),

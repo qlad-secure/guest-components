@@ -8,8 +8,8 @@ use execution_proof_handoff::{
     fd_transport::{FdExpectation, SendOutcome, TransportError},
     rootfs_custody::{
         AdmissionBundle, AdmissionDescriptor, CustodyAnnouncement, CustodyError, FinalizedAck,
-        PreparationProvenance, PreparationRecord, ProducerTransaction, ProvenanceDescriptor,
-        ValidatedReceipt, MAX_PROVENANCE_BYTES,
+        MAX_PROVENANCE_BYTES, PreparationProvenance, PreparationRecord, ProducerTransaction,
+        ProvenanceDescriptor, ValidatedReceipt,
     },
     startup::{Role, StartupBoundChannel},
 };
@@ -122,6 +122,8 @@ enum State {
     Pending(StartupBoundChannel),
     Enrolled(StartupBoundChannel),
     Active(Box<Active>),
+    #[cfg(feature = "launch-preparation-runtime-gcp")]
+    PublicationRetained { _retained: Box<Retained>, record: PreparationRecord },
     Terminal,
 }
 struct Active {
@@ -186,15 +188,86 @@ impl RuntimeFactory {
     }
 }
 
+#[cfg(feature = "launch-preparation-runtime-gcp")]
+impl RuntimeFactory {
+    pub fn begin_gcp_custody_attempt(
+        &self,
+        config: GcpErofsRuntimeAttemptConfig,
+        recorder: GcpLaunchRecorder,
+        channel: StartupBoundChannel,
+        limits: CustodyProducerLimits,
+    ) -> Result<CustodyRuntimeAttempt, CustodyProducerError> {
+        limits.validate()?;
+        if channel.role() != Role::Preparation {
+            return Err(CustodyProducerError::WrongRole);
+        }
+        let attempt = self
+            .begin_gcp_erofs_attempt(config, recorder)
+            .map_err(CustodyProducerError::Preparation)?
+            .0;
+        Ok(CustodyRuntimeAttempt {
+            state: State::Pending(channel),
+            attempt,
+            limits,
+        })
+    }
+    #[cfg(feature = "launch-preparation-mount")]
+    pub fn begin_gcp_mounted_custody_attempt(
+        &self,
+        config: GcpMountedRuntimeAttemptConfig,
+        recorder: GcpLaunchRecorder,
+        channel: StartupBoundChannel,
+        limits: CustodyProducerLimits,
+    ) -> Result<CustodyRuntimeAttempt, CustodyProducerError> {
+        limits.validate()?;
+        if channel.role() != Role::Preparation {
+            return Err(CustodyProducerError::WrongRole);
+        }
+        let attempt = self
+            .begin_gcp_mounted_attempt(config, recorder)
+            .map_err(CustodyProducerError::Preparation)?
+            .0;
+        Ok(CustodyRuntimeAttempt {
+            state: State::Pending(channel),
+            attempt,
+            limits,
+        })
+    }
+}
+
 impl CustodyRuntimeAttempt {
     pub fn challenge_nonce(&self) -> &str {
         self.attempt.challenge_nonce()
+    }
+    /// The GCP authority request uses this owner's pending nonce and policy,
+    /// after authenticating the independent receiver's enrollment channel.
+    #[cfg(feature = "launch-preparation-runtime-gcp")]
+    pub fn gcp_admission_request(
+        &self,
+        aggregate: &[u8],
+        operation: execution_proof_contract::admission::gcp::GcpAdmissionOperation,
+    ) -> Result<Vec<u8>, CustodyProducerError> {
+        if !matches!(self.state, State::Enrolled(_)) {
+            return Err(CustodyProducerError::Unavailable);
+        }
+        self.attempt
+            .gcp_admission_request(aggregate, operation)
+            .map_err(CustodyProducerError::Preparation)
+    }
+    #[cfg(feature = "launch-preparation-runtime-gcp")]
+    pub fn gcp_credential_request(&self, aggregate: &[u8]) -> Result<Vec<u8>, CustodyProducerError> {
+        if !matches!(self.state, State::Enrolled(_)) {
+            return Err(CustodyProducerError::Unavailable);
+        }
+        self.attempt.gcp_credential_request(aggregate).map_err(CustodyProducerError::Preparation)
     }
     pub fn status(&self) -> CustodyProducerStatus {
         match &self.state {
             State::Pending(_) => CustodyProducerStatus::PendingEnrollment,
             State::Enrolled(_) => CustodyProducerStatus::Enrolled,
             State::Active(active) => active.phase,
+            #[cfg(feature = "launch-preparation-runtime-gcp")]
+            State::PublicationRetained { .. } => CustodyProducerStatus::Finalized,
             State::Terminal => CustodyProducerStatus::Terminal,
         }
     }
@@ -229,7 +302,7 @@ impl CustodyRuntimeAttempt {
             tokio::time::sleep(Duration::from_millis(2)).await;
         };
         let wire = pending
-            .gate
+            .admission
             .receiver_enrollment(packet, &channel)
             .map_err(CustodyProducerError::Enrollment)?;
         loop {
@@ -358,8 +431,24 @@ impl CustodyRuntimeAttempt {
     pub fn record(&self) -> Option<&PreparationRecord> {
         match &self.state {
             State::Active(active) => active.transaction.committed().map(|commit| &commit.record),
+            #[cfg(feature = "launch-preparation-runtime-gcp")]
+            State::PublicationRetained { record, .. } => Some(record),
             _ => None,
         }
+    }
+    /// Reuse the authenticated channel for public execution publication only
+    /// after the receiver's final ACK. Keep the preparation actor/backing owner
+    /// alive until explicit cancellation; no new offer or lease can be issued.
+    #[cfg(feature = "launch-preparation-runtime-gcp")]
+    pub fn take_completed_channel(&mut self) -> Result<StartupBoundChannel, CustodyProducerError> {
+        if !matches!(&self.state, State::Active(active) if active.phase == CustodyProducerStatus::Finalized) {
+            return Err(CustodyProducerError::Unavailable);
+        }
+        let State::Active(active) = std::mem::replace(&mut self.state, State::Terminal) else { return Err(CustodyProducerError::Unavailable); };
+        let Active { channel, transaction, _retained, .. } = *active;
+        let record = transaction.committed().ok_or(CustodyProducerError::Unavailable)?.record.clone();
+        self.state = State::PublicationRetained { _retained, record };
+        Ok(channel)
     }
     pub async fn cancel_and_wait(&mut self) -> Result<(), CustodyProducerError> {
         self.state = State::Terminal;

@@ -8,6 +8,10 @@
 //! operation. The trusted embedding runtime must derive the bounded operation
 //! list from its verified manifest; this adapter does not verify that manifest.
 
+#[cfg(feature = "launch-credential-gcp")]
+#[path = "launch_credential/gcp.rs"]
+pub mod gcp;
+
 use execution_proof_contract::{LaunchBinding, ValidityWindow};
 use execution_proof_handoff::admission::AcceptedAttemptContext;
 use kbs_protocol::launch_recorder::AttemptCredential;
@@ -98,6 +102,8 @@ pub struct AttemptGcpDecrypter {
     expected: TrustedGcpAttempt,
     operation_states: Vec<OperationState>,
     delivery_sha384: String,
+    #[cfg(feature = "launch-credential-gcp")]
+    gcp_v2_single_attempt: bool,
 }
 
 impl AttemptGcpDecrypter {
@@ -146,6 +152,8 @@ impl AttemptGcpDecrypter {
             operation_states: vec![OperationState::Pending; expected.layer_operations.len()],
             expected,
             delivery_sha384,
+            #[cfg(feature = "launch-credential-gcp")]
+            gcp_v2_single_attempt: false,
         })
     }
 
@@ -169,7 +177,8 @@ impl AttemptGcpDecrypter {
     /// Execute one preapproved layer operation through the existing provider.
     /// Each entry is consumed before awaiting the SDK. Failure or cancellation
     /// leaves the sole provider unavailable for the rest of this attempt.
-    /// SDK-internal retries are not a guarantee of one physical network request.
+    /// The GCP-v2 constructor disables SDK retries and applies a 30-second
+    /// total deadline. Cancellation cannot establish the remote outcome.
     pub async fn decrypt_layer_once(
         &mut self,
         layer_index: u32,
@@ -178,7 +187,12 @@ impl AttemptGcpDecrypter {
     ) -> Result<Zeroizing<Vec<u8>>, CredentialError> {
         let (mut client, position) =
             self.start_operation(layer_index, layer_digest_sha256, ciphertext)?;
-        let plaintext = Zeroizing::new(
+        #[cfg(feature = "launch-credential-gcp")]
+        let result = if self.gcp_v2_single_attempt {
+            client
+                .decrypt_gcp_attempt_once(ciphertext, &self.expected.kms_key_version)
+                .await
+        } else {
             client
                 .decrypt(
                     ciphertext,
@@ -186,8 +200,16 @@ impl AttemptGcpDecrypter {
                     &Annotations::default(),
                 )
                 .await
-                .map_err(|_| CredentialError::KmsOperationFailed)?,
-        );
+        };
+        #[cfg(not(feature = "launch-credential-gcp"))]
+        let result = client
+            .decrypt(
+                ciphertext,
+                &self.expected.kms_key_version,
+                &Annotations::default(),
+            )
+            .await;
+        let plaintext = Zeroizing::new(result.map_err(|_| CredentialError::KmsOperationFailed)?);
         self.finish_operation(client, position);
         Ok(plaintext)
     }
@@ -378,6 +400,8 @@ mod tests {
             operation_states: vec![OperationState::Pending; expected.layer_operations.len()],
             expected,
             delivery_sha384: "0c".repeat(48),
+            #[cfg(feature = "launch-credential-gcp")]
+            gcp_v2_single_attempt: false,
         }
     }
 
@@ -516,6 +540,33 @@ mod tests {
                 .err(),
             Some(CredentialError::AttemptUnavailable)
         );
+        assert!(!decrypter.all_operations_succeeded());
+    }
+
+    #[cfg(feature = "launch-credential-gcp")]
+    #[tokio::test]
+    async fn gcp_v2_sdk_credential_failure_permanently_consumes_the_attempt() {
+        let mut decrypter = guard_fixture();
+        decrypter.gcp_v2_single_attempt = true;
+        // The actual SDK rejects this deliberately malformed private key while
+        // constructing credentials; it performs no authentication or KMS RPC.
+        assert_eq!(
+            decrypter
+                .decrypt_layer_once(0, &"11".repeat(32), b"wrapped-layer-key")
+                .await,
+            Err(CredentialError::KmsOperationFailed)
+        );
+        for (index, digest, ciphertext) in [
+            (0, "11".repeat(32), b"wrapped-layer-key".as_slice()),
+            (2, "12".repeat(32), b"second-wrapped-layer-key".as_slice()),
+        ] {
+            assert_eq!(
+                decrypter
+                    .decrypt_layer_once(index, &digest, ciphertext)
+                    .await,
+                Err(CredentialError::AttemptUnavailable)
+            );
+        }
         assert!(!decrypter.all_operations_succeeded());
     }
 }

@@ -17,6 +17,7 @@ path = "src/lib.rs"
 default = ["gcp", "launch-credential"]
 gcp = []
 launch-credential = ["gcp"]
+launch-credential-gcp = ["launch-credential", "dep:google-cloud-gax", "tokio/time"]
 # Recognize provider error cfgs without compiling the other providers.
 aliyun = []
 aws = []
@@ -27,8 +28,12 @@ async-trait = "=0.1.89"
 const_format = "=0.2.36"
 google-cloud-auth = { version = "=1.16.0", default-features = false }
 google-cloud-kms-v1 = "=1.14.0"
+google-cloud-gax = { version = "=1.15.0", optional = true }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
 thiserror = "=2.0.18"
 tokio = { version = "=1.52.3", features = ["fs", "macros", "rt", "sync"] }
 tracing = "=0.1.44"
+
+[dev-dependencies]
+tokio = { version = "=1.52.3", features = ["net", "io-util", "rt", "macros", "test-util"] }
