@@ -20,6 +20,8 @@ use super::{
 };
 use nix::libc;
 use sha2::{Digest, Sha384};
+#[cfg(feature = "launch-preparation-execution")]
+use std::os::fd::BorrowedFd;
 use std::{
     collections::BTreeSet,
     fs::File,
@@ -164,6 +166,37 @@ impl ReceivedMountedView {
 
     pub fn discard(self) {
         drop(self);
+    }
+
+    /// Consume the checked view for trusted task creation. The returned owner
+    /// retains all backing and mount resources while its execution FDs are used.
+    #[cfg(feature = "launch-preparation-execution")]
+    pub fn into_execution(self) -> ExecutionView {
+        ExecutionView { owner: self }
+    }
+}
+
+/// One checked root/cwd/executable association for the trusted runtime.
+/// There is no path or descriptor adoption constructor. Child aliases require
+/// their caller to retain this owner until the actual child has been reaped.
+#[cfg(feature = "launch-preparation-execution")]
+pub struct ExecutionView {
+    owner: ReceivedMountedView,
+}
+
+#[cfg(feature = "launch-preparation-execution")]
+impl ExecutionView {
+    pub fn root_fd(&self) -> BorrowedFd<'_> {
+        self.owner._root.as_fd()
+    }
+    pub fn cwd_fd(&self) -> BorrowedFd<'_> {
+        self.owner._checked._cwd.as_fd()
+    }
+    pub fn executable_fd(&self) -> BorrowedFd<'_> {
+        self.owner._checked._executable.as_fd()
+    }
+    pub fn summary(&self) -> &ReceivedRootfsSummary {
+        self.owner.summary()
     }
 }
 

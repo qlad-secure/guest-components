@@ -15,6 +15,7 @@ launch-preparation-executable = ["launch-preparation"]
 launch-preparation-receive-core = []
 launch-preparation-mount = ["launch-preparation-executable", "launch-preparation-receive-core"]
 launch-preparation-receive = ["launch-preparation-mount"]
+launch-preparation-execution = ["launch-preparation-receive"]
 
 [dependencies]
 nix = { version = "=0.31.3", features = ["fs"] }

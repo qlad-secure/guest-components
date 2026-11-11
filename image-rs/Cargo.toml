@@ -94,6 +94,7 @@ launch-preparation-mount = ["launch-preparation-erofs"]
 launch-preparation-offer = ["launch-preparation-erofs"]
 launch-preparation-custody = ["launch-preparation-offer"]
 launch-preparation-receive = ["launch-preparation-mount"]
+launch-preparation-execution = ["launch-preparation-receive"]
 launch-preparation-receive-core = []
 default = [
     "signature-cosign-rustls",
