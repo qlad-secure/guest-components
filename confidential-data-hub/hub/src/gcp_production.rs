@@ -9,6 +9,9 @@
 
 #[path = "gcp_public_serial.rs"]
 pub mod public_serial;
+mod sandbox;
+
+use sandbox::EarlySandbox;
 
 use crate::launch_preparation::{
     runtime::{
@@ -26,7 +29,7 @@ use execution_proof_contract::{
     gcp_boot_binding::GcpBootBindingV1,
     gcp_bootstrap::GcpBootstrapChallenge,
     gcp_policy_receipt::{verify_policy_aggregate, GcpAggregateExpectations},
-    gcp_startup::{verify_attempt_plan, GcpRoleCapsuleV1, CAPSULE_PURPOSE},
+    gcp_startup::{verify_attempt_plan, GcpRoleCapsuleV1, CAPSULE_PURPOSE, MAX_SPEC_BYTES},
     policy_receipt::ResourcePolicyRequest,
     verify_launch_grant_historical, GrantExpectations, LaunchGrant, Signed, VerifiedLaunchGrant,
 };
@@ -53,7 +56,7 @@ use std::{
     io,
     net::SocketAddr,
     os::{
-        fd::{AsRawFd, FromRawFd, OwnedFd},
+        fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd},
         unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
     },
     time::Duration,
@@ -166,6 +169,8 @@ enum ReadyStage {
     CustodyProgress,
     KataReady,
     ManagementRelay,
+    SandboxLifetime,
+    SandboxAttach,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -389,6 +394,11 @@ struct StopRequest {
     stop: bool,
 }
 
+enum ManagementTransport {
+    Deferred(ManagementKey),
+    Sandbox(EarlySandbox),
+}
+
 /// This process owns the async runtime and all children through shutdown. The
 /// launching thread also owns PDEATHSIG-sensitive role handles.
 pub fn run() -> Result<()> {
@@ -571,14 +581,38 @@ async fn run_owned(embedded: EmbeddedRole) -> Result<()> {
     // diagnostic frame to a possibly partial primary publication.
     control.publish("policy", &publication).await?;
     drop(publication);
-    let plan_input: PlanRequest = control.request().await?;
+    let verify_aggregate = || {
+        checked(verify_policy_aggregate(
+            &aggregate,
+            &grant,
+            &aggregate_expect,
+        ))
+    };
+    let (mut management, early_aggregate) = if embedded.sandbox_gateway_enabled() {
+        let verified = verify_aggregate()?;
+        let sandbox =
+            EarlySandbox::start(&embedded, boot.management_tls_private_key_pem, &mut control)
+                .await?;
+        (ManagementTransport::Sandbox(sandbox), Some(verified))
+    } else {
+        (
+            ManagementTransport::Deferred(boot.management_tls_private_key_pem),
+            None,
+        )
+    };
+    let plan_input: PlanRequest = match &mut management {
+        ManagementTransport::Deferred(_) => control.request().await?,
+        ManagementTransport::Sandbox(sandbox) => tokio::select! {
+            request = control.request() => request?,
+            () = sandbox.ended_or_unexpected_event() => return Err(ProductionRejected),
+        },
+    };
     public_bytes(&plan_input.signed_plan, CONTROL_BYTES)?;
-    public_bytes(&plan_input.effective_spec, 256 << 10)?;
-    let verified_aggregate = checked(verify_policy_aggregate(
-        &aggregate,
-        &grant,
-        &aggregate_expect,
-    ))?;
+    public_bytes(&plan_input.effective_spec, MAX_SPEC_BYTES)?;
+    let verified_aggregate = match early_aggregate {
+        Some(verified) => verified,
+        None => verify_aggregate()?,
+    };
     let plan = checked(verify_attempt_plan(
         &plan_input.signed_plan,
         &c.roots.authority_public_key,
@@ -586,6 +620,16 @@ async fn run_owned(embedded: EmbeddedRole) -> Result<()> {
         &verified_aggregate,
         &binding,
     ))?;
+    if let ManagementTransport::Sandbox(sandbox) = &mut management {
+        let image_ref = format!(
+            "{}@sha256:{}",
+            config.registry_repository,
+            grant.binding().selected_manifest_sha256
+        );
+        sandbox
+            .bind(&plan, image_ref, &plan_input.effective_spec)
+            .await?;
+    }
     let capsule = GcpRoleCapsuleV1 {
         version: 1,
         purpose: CAPSULE_PURPOSE.into(),
@@ -649,7 +693,7 @@ async fn run_owned(embedded: EmbeddedRole) -> Result<()> {
         &aggregate,
         &grant_input.signed_grant,
         &embedded,
-        boot.management_tls_private_key_pem,
+        management,
     )
     .await;
     // Retain the preparation actor/backing until publication ends, then drain it
@@ -669,7 +713,7 @@ async fn finish_attempt(
     aggregate: &[u8],
     grant: &[u8],
     embedded: &EmbeddedRole,
-    management_key: ManagementKey,
+    mut management: ManagementTransport,
 ) -> Result<()> {
     checked(owner.enroll_receiver().await)?;
     let request = checked(owner.gcp_admission_request(aggregate, GcpAdmissionOperation::Redeem))?;
@@ -677,55 +721,76 @@ async fn finish_attempt(
     // The admission-request frame was sent completely. A failure before the
     // next frame can now report a fixed diagnostic while preserving cleanup.
     let prepared: std::result::Result<_, ReadyDiagnostic> = async {
-        let admission: AdmissionRequest = control
-            .request()
-            .await
-            .map_err(|_| ReadyDiagnostic::rejected(ReadyStage::AdmissionInput))?;
-        public_bytes(&admission.signed_authorization, CONTROL_BYTES)
-            .map_err(|_| ReadyDiagnostic::rejected(ReadyStage::AdmissionInput))?;
-        // The owned gate checks admission before the recorder decrypts the
-        // authenticated JWE returned by KBS.
-        let credential_request = owner
-            .gcp_credential_request(aggregate)
-            .map_err(|_| ReadyDiagnostic::rejected(ReadyStage::CredentialRequest))?;
-        let credential_response = kbs
-            .post(GcpLaunchRoute::CredentialDelivery, &credential_request)
-            .await
-            .map_err(ReadyDiagnostic::credential_http)?;
-        owner
-            .prepare(RuntimeDelivery {
-                grant,
-                aggregate,
-                admission_receipt: &admission.signed_authorization,
-                credential_response: &credential_response,
-            })
-            .await
-            .map_err(ReadyDiagnostic::prepare)?;
-        let deadline = Instant::now() + PHASE_TIMEOUT;
-        while owner.status() != CustodyProducerStatus::Finalized {
-            if Instant::now() >= deadline {
-                return Err(ReadyDiagnostic::deadline(ReadyStage::CustodyProgress));
+        let prepare = async {
+            let admission: AdmissionRequest = control
+                .request()
+                .await
+                .map_err(|_| ReadyDiagnostic::rejected(ReadyStage::AdmissionInput))?;
+            public_bytes(&admission.signed_authorization, CONTROL_BYTES)
+                .map_err(|_| ReadyDiagnostic::rejected(ReadyStage::AdmissionInput))?;
+            // The owned gate checks admission before the recorder decrypts the
+            // authenticated JWE returned by KBS.
+            let credential_request = owner
+                .gcp_credential_request(aggregate)
+                .map_err(|_| ReadyDiagnostic::rejected(ReadyStage::CredentialRequest))?;
+            let credential_response = kbs
+                .post(GcpLaunchRoute::CredentialDelivery, &credential_request)
+                .await
+                .map_err(ReadyDiagnostic::credential_http)?;
+            owner
+                .prepare(RuntimeDelivery {
+                    grant,
+                    aggregate,
+                    admission_receipt: &admission.signed_authorization,
+                    credential_response: &credential_response,
+                })
+                .await
+                .map_err(ReadyDiagnostic::prepare)?;
+            let deadline = Instant::now() + PHASE_TIMEOUT;
+            while owner.status() != CustodyProducerStatus::Finalized {
+                if Instant::now() >= deadline {
+                    return Err(ReadyDiagnostic::deadline(ReadyStage::CustodyProgress));
+                }
+                owner.advance().map_err(ReadyDiagnostic::custody_progress)?;
+                tokio::time::sleep(Duration::from_millis(1)).await;
             }
-            owner.advance().map_err(ReadyDiagnostic::custody_progress)?;
-            tokio::time::sleep(Duration::from_millis(1)).await;
+            let mut channel = owner
+                .take_completed_channel()
+                .map_err(ReadyDiagnostic::custody_progress)?;
+            let (ready, fd) = receive_publication(&mut channel, deadline)
+                .await
+                .map_err(|_| ReadyDiagnostic::rejected(ReadyStage::KataReady))?;
+            if ready.kind != PublicationKind::Ready || fd.is_some() {
+                return Err(ReadyDiagnostic::rejected(ReadyStage::KataReady));
+            }
+            Ok(channel)
+        };
+        let channel = match &mut management {
+            ManagementTransport::Deferred(_) => prepare.await?,
+            ManagementTransport::Sandbox(sandbox) => tokio::select! {
+                ready = prepare => ready?,
+                () = sandbox.ended_or_unexpected_event() => {
+                    return Err(ReadyDiagnostic::rejected(ReadyStage::SandboxLifetime));
+                }
+            },
+        };
+        match management {
+            ManagementTransport::Deferred(key) => {
+                let relay = gcp_startup::launch_management_relay(embedded, &key.0)
+                    .map_err(|_| ReadyDiagnostic::rejected(ReadyStage::ManagementRelay))?;
+                Ok((channel, Some(relay), None))
+            }
+            ManagementTransport::Sandbox(mut sandbox) => {
+                sandbox
+                    .attach()
+                    .await
+                    .map_err(|_| ReadyDiagnostic::rejected(ReadyStage::SandboxAttach))?;
+                Ok((channel, None, Some(sandbox)))
+            }
         }
-        let mut channel = owner
-            .take_completed_channel()
-            .map_err(ReadyDiagnostic::custody_progress)?;
-        let (ready, fd) = receive_publication(&mut channel, deadline)
-            .await
-            .map_err(|_| ReadyDiagnostic::rejected(ReadyStage::KataReady))?;
-        if ready.kind != PublicationKind::Ready || fd.is_some() {
-            return Err(ReadyDiagnostic::rejected(ReadyStage::KataReady));
-        }
-        let relay = gcp_startup::launch_management_relay(embedded, &management_key.0)
-            .map_err(|_| ReadyDiagnostic::rejected(ReadyStage::ManagementRelay))?;
-        Ok((channel, relay))
     }
     .await;
-    let (mut channel, _relay) = diagnostic_outcome(control, prepared).await?;
-    // The relay owns its private TLS state now; the proof owner needs no copy.
-    drop(management_key);
+    let (mut channel, _relay, sandbox) = diagnostic_outcome(control, prepared).await?;
     // A failed ready write may already have emitted bytes. Propagate it
     // directly and never append a diagnostic to that stream.
     control.publish("ready", &serde_json::json!({})).await?;
@@ -747,34 +812,61 @@ async fn finish_attempt(
         }
         _ => return Err(ProductionRejected),
     }
+    // The host sends Stop after archiving the terminal publication. For early
+    // sandbox, it also authorizes delivery of the terminal app status.
     let stop: StopRequest = control.request().await?;
     if !stop.stop {
         return Err(ProductionRejected);
     }
+    let (sandbox_stopped, stop_deadline) = match sandbox {
+        Some(sandbox) => (
+            sandbox.finish_after_archive_ack().await,
+            Instant::now() + FRAME_TIMEOUT,
+        ),
+        None => (Ok(()), deadline),
+    };
     let wire = checked(checked(Publication::control(PublicationKind::Stop))?.encode())?;
+    send_packet(&mut channel, stop_deadline, &wire, None)
+        .await
+        .and(sandbox_stopped)
+}
+
+async fn send_packet(
+    channel: &mut StartupBoundChannel,
+    deadline: Instant,
+    wire: &[u8],
+    fd: Option<BorrowedFd<'_>>,
+) -> Result<()> {
     loop {
         if Instant::now() >= deadline {
             return Err(ProductionRejected);
         }
-        if checked(channel.try_send(&wire, None))? == SendOutcome::Sent {
-            break;
+        if checked(channel.try_send(wire, fd))? == SendOutcome::Sent {
+            return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
-    Ok(())
 }
 
 async fn receive_publication(
     channel: &mut StartupBoundChannel,
     deadline: Instant,
 ) -> Result<(Publication, Option<OwnedFd>)> {
+    let (wire, fd) = receive_packet(channel, deadline, FdExpectation::Optional).await?;
+    Ok((checked(Publication::decode(&wire))?, fd))
+}
+
+async fn receive_packet(
+    channel: &mut StartupBoundChannel,
+    deadline: Instant,
+    expectation: FdExpectation,
+) -> Result<(Vec<u8>, Option<OwnedFd>)> {
     loop {
         if Instant::now() >= deadline {
             return Err(ProductionRejected);
         }
-        if let Some(packet) = checked(channel.try_receive(FdExpectation::Optional))? {
-            let (wire, fd) = packet.into_parts();
-            return Ok((checked(Publication::decode(&wire))?, fd));
+        if let Some(packet) = checked(channel.try_receive(expectation))? {
+            return Ok(packet.into_parts());
         }
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
@@ -1507,6 +1599,16 @@ mod tests {
             (
                 ReadyDiagnostic::rejected(ReadyStage::ManagementRelay),
                 "management_relay",
+                "rejected",
+            ),
+            (
+                ReadyDiagnostic::rejected(ReadyStage::SandboxAttach),
+                "sandbox_attach",
+                "rejected",
+            ),
+            (
+                ReadyDiagnostic::rejected(ReadyStage::SandboxLifetime),
+                "sandbox_lifetime",
                 "rejected",
             ),
         ];

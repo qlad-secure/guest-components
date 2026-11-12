@@ -107,8 +107,8 @@ The `request` object has exactly the fields for the current phase:
    decrypts JWE. Attempt credentials and KMS plaintext remain private. Actual
    registry ingress, signature/content verification, fresh GCP KMS operations,
    native EROFS build/readback and receiver custody must complete before Ready.
-5. After Kata Ready, the owner starts the pinned TLS management relay and emits
-   `ready`. Host management then uses the fixed TLS relay/closed Kata service.
+5. In the direct profile, Kata Ready is followed by startup of the pinned TLS
+   management relay. The owner then emits `ready`.
    Kata's actual execution export is forwarded in `export_json_base64` with
    `phase: "export"`, or its unavailable result as `phase: "unproven"`.
    This export is an execution envelope; the external pack builder supplies
@@ -117,6 +117,24 @@ The `request` object has exactly the fields for the current phase:
    the owned management/Kata children and drain the preparation actor. The actor
    and backing stay owned throughout publication, including after the completed
    custody channel is transferred back to the producer.
+
+### Early sandbox profile
+
+The authenticated management relay config can opt in with
+`"sandbox_gateway": true`. After the `policy` publication and aggregate
+verification, the owner starts the pinned sandbox process and relay. It
+publishes `sandbox-ready` followed by `sandbox-candidate` with the observed
+`container_id` and `wire_sha384`. The controller sends its signed plan after
+observing the candidate. The container ID selects the pending request and
+carries no authority for Kubernetes Pod identity.
+
+The signed plan must name that container and match the exact effective spec
+bytes. The sandbox checks the pending request against that spec and the image
+reference formed from the measured repository and the manifest digest in L.
+Only then does the owner start protected Kata preparation. The same relay
+continues serving sandbox traffic, and `ready` follows the protected runtime
+readiness and attachment of the pending app request. A closed sandbox channel
+while awaiting the plan or custody cancels the attempt and starts cleanup.
 
 Every output has `version: 1`,
 `purpose: "qlad.execution-proof.gcp-preparation-publication.v1"`, `phase`, and
