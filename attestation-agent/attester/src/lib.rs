@@ -10,6 +10,12 @@ pub mod sample;
 pub mod sample_device;
 pub mod utils;
 
+#[cfg(feature = "execution-quote-tdx")]
+pub mod execution_quote;
+
+#[cfg(feature = "execution-quote-tdx")]
+pub mod gcp_execution_quote;
+
 #[cfg(feature = "az-snp-vtpm-attester")]
 pub mod az_snp_vtpm;
 

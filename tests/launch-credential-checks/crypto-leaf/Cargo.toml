@@ -1,0 +1,36 @@
+[package]
+name = "onb17-crypto-source-checks"
+version = "0.1.0"
+edition = "2024"
+publish = false
+[lib]
+name = "crypto"
+path = "../../../attestation-agent/deps/crypto/src/lib.rs"
+[features]
+default = ["rust-crypto", "mlkem"]
+rust-crypto = ["dep:aes-gcm", "dep:ctr", "dep:rsa", "dep:aes-kw", "dep:concat-kdf", "dep:p256", "dep:p521", "dep:rand_08"]
+mlkem = ["dep:ml-kem", "dep:getrandom", "dep:rand_08", "dep:hkdf"]
+[dependencies]
+aes-gcm = { version = "=0.11.0", optional = true }
+aes-kw = { version = "=0.3.1", features = ["zeroize"], optional = true }
+anyhow = "=1.0.103"
+tracing = "=0.1.44"
+base64 = "=0.23.1"
+concat-kdf = { version = "=0.1.0", optional = true }
+ctr = { version = "=0.10.0", optional = true }
+p256 = { version = "=0.13.2", features = ["ecdh", "pem"], optional = true }
+p521 = { version = "=0.13.3", features = ["ecdh", "pem"], optional = true }
+rand = "=0.10.2"
+ml-kem = { version = "=0.3.2", optional = true }
+getrandom = { version = "=0.4.2", default-features = false, features = ["sys_rng"], optional = true }
+rand_08 = { package = "rand", version = "=0.8.6", optional = true }
+rsa = { version = "=0.9.10", features = ["sha2"], optional = true }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.150"
+sha2 = "=0.11.0"
+hkdf = { version = "=0.13.0", optional = true }
+strum = { version = "=0.28.0", features = ["derive"] }
+zeroize = "=1.9.0"
+kbs-types = "=0.18.0"
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("openssl", "kms_unwrap"))'] }

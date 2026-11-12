@@ -1,0 +1,31 @@
+[package]
+name = "image-rs-preparation"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Linux sealed-image and independently checked receiver views"
+
+[workspace]
+resolver = "2"
+
+[features]
+default = ["launch-preparation-receive"]
+launch-preparation = []
+launch-preparation-executable = ["launch-preparation"]
+launch-preparation-receive-core = []
+launch-preparation-mount = ["launch-preparation-executable", "launch-preparation-receive-core"]
+launch-preparation-receive = ["launch-preparation-mount"]
+launch-preparation-execution = ["launch-preparation-receive"]
+
+[dependencies]
+nix = { version = "=0.31.3", features = ["fs"] }
+sha2 = "=0.11.0"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.150"
+thiserror = "=2.0.18"
+zeroize = "1.8.2"
+
+# The shared source also contains producer-only profiles, which this crate
+# deliberately does not expose as selectable features.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("launch-preparation-erofs", "launch-preparation-content", "launch-preparation-signature", "launch-preparation-registry", "launch-preparation-offer"))'] }

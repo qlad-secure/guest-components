@@ -19,6 +19,7 @@ chrono = { workspace = true, optional = true }
 const_format.workspace = true
 google-cloud-auth = { workspace = true, optional = true }
 google-cloud-kms-v1 = { workspace = true, optional = true }
+google-cloud-gax = { version = "=1.15.0", optional = true }
 hex = { workspace = true, optional = true }
 kbs_protocol = { path = "../../attestation-agent/kbs_protocol", default-features = false, features = [
     "passport",
@@ -47,7 +48,7 @@ url = { workspace = true, optional = true }
 rstest.workspace = true
 serial_test.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["rt", "macros"] }
+tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "test-util"] }
 
 [build-dependencies]
 anyhow.workspace = true
@@ -76,4 +77,7 @@ azure = [
     "url",
 ]
 gcp = ["google-cloud-auth", "google-cloud-kms-v1"]
+# Explicit memory-only credentials for the opt-in attempt-owned GCP workflow.
+launch-credential = ["gcp"]
+launch-credential-gcp = ["launch-credential", "dep:google-cloud-gax", "tokio/time"]
 kbs = ["kbs_protocol"]

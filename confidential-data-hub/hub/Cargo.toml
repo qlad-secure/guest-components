@@ -32,6 +32,10 @@ name = "secret"
 path = "src/bin/secret_cli.rs"
 required-features = ["cli"]
 
+[[bin]]
+name = "gcp-proof-preparation"
+required-features = ["gcp-production"]
+
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
@@ -42,6 +46,7 @@ clap = { workspace = true, features = ["derive"], optional = true }
 config = { workspace = true }
 const_format.workspace = true
 crypto.path = "../../attestation-agent/deps/crypto"
+flate2 = { version = "=1.1.9", default-features = false, features = ["rust_backend"], optional = true }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, optional = true }
 image-rs = { path = "../../image-rs", default-features = false, features = [
@@ -52,6 +57,11 @@ jose-jwa = "0.1.2"
 jose-jwk = "0.1.2"
 jose-jws = "0.1.2"
 kms = { path = "../kms", default-features = false, features = ["kbs"] }
+kbs_protocol = { path = "../../attestation-agent/kbs_protocol", default-features = false, features = ["launch-recorder"], optional = true }
+execution-proof-client = { path = "../../../execution-proof-prototype/client", optional = true }
+execution-proof-contract = { path = "../../../execution-proof-prototype/contract", optional = true }
+execution-proof-handoff = { path = "../../../execution-proof-prototype/handoff", optional = true }
+sha2 = { workspace = true, optional = true }
 libcryptsetup-rs = { version = "0.13.1", optional = true, features = ["mutex"] }
 nix.workspace = true
 percent-encoding.workspace = true
@@ -95,6 +105,25 @@ tokio = { workspace = true, features = ["rt", "macros"] }
 
 [features]
 default = ["aliyun", "kbs", "bin", "ttrpc", "grpc", "cli", "mlkem"]
+
+# Attempt-owned memory-only GCP credentials; no global initialization or files.
+launch-credential = ["kms/launch-credential", "dep:kbs_protocol", "dep:execution-proof-contract", "dep:execution-proof-handoff", "dep:sha2"]
+launch-credential-gcp = ["launch-credential", "kbs_protocol/launch-recorder-gcp", "kms/launch-credential-gcp"]
+launch-preparation = ["launch-credential"]
+launch-preparation-gcp = ["launch-preparation", "launch-credential-gcp"]
+launch-preparation-content-gcp = ["launch-preparation-content", "launch-preparation-gcp"]
+launch-preparation-content = ["launch-preparation", "image-rs/launch-preparation-signature", "image-rs/launch-preparation-content"]
+launch-preparation-runtime = ["launch-preparation-content", "image-rs/launch-preparation-registry", "dep:execution-proof-client", "tokio/time"]
+launch-preparation-runtime-gcp = ["launch-preparation-runtime", "launch-preparation-content-gcp"]
+launch-preparation-executable = ["launch-preparation-runtime", "image-rs/launch-preparation-executable"]
+# Pinned native build, actual readback and sealed backing; no mount/start permit.
+launch-preparation-erofs = ["launch-preparation-executable", "image-rs/launch-preparation-erofs"]
+launch-preparation-mount = ["launch-preparation-erofs", "image-rs/launch-preparation-mount"]
+launch-preparation-offer = ["launch-preparation-erofs", "image-rs/launch-preparation-offer", "execution-proof-handoff/rootfs-transfer"]
+launch-preparation-custody = ["launch-preparation-offer", "image-rs/launch-preparation-custody", "execution-proof-handoff/rootfs-custody"]
+launch-preparation-custody-native = ["launch-preparation-custody", "image-rs/launch-preparation-receive"]
+# Closed measured startup only; this binary never initializes the generic Hub.
+gcp-production = ["launch-preparation-runtime-gcp", "launch-preparation-custody", "kbs_protocol/launch-recorder-gcp-tdx", "execution-proof-handoff/gcp-startup", "execution-proof-client/https", "tokio/net", "dep:flate2"]
 
 # support aliyun stacks (KMS, ..)
 aliyun = ["kms/aliyun"]

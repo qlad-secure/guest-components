@@ -3,6 +3,9 @@
 Confidential Data Hub (`CDH`) is a service running inside the guest to provide resource related
 APIs.
 
+The opt-in measured GCP preparation owner has a separate
+[closed startup and control protocol](gcp-production.md).
+
 ### APIs
 
 The APIs are defined in the [proto file](../protos/protos/confidential-data-hub).

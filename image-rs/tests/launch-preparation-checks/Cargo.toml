@@ -1,0 +1,59 @@
+[package]
+name = "onb17-sealed-image-source-checks"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+resolver = "2"
+
+[features]
+default = ["launch-preparation"]
+launch-preparation = []
+launch-preparation-signature = ["launch-preparation", "dep:base64", "dep:serde", "dep:serde_json", "dep:sigstore", "dep:oci-spec"]
+launch-preparation-content = ["launch-preparation", "dep:base64", "dep:serde", "dep:serde_json", "dep:ocicrypt-rs", "dep:tokio", "dep:flate2", "dep:zeroize", "dep:async-compression", "dep:tokio-tar"]
+launch-preparation-registry = ["launch-preparation", "dep:reqwest", "dep:url", "dep:base64", "dep:serde", "dep:serde_json", "dep:oci-spec", "dep:zeroize", "dep:tokio"]
+launch-preparation-executable = ["launch-preparation-content"]
+launch-preparation-erofs = ["launch-preparation-executable"]
+# Detached EROFS view and actual filesystem/executable revalidation.
+launch-preparation-mount = ["launch-preparation-erofs"]
+launch-preparation-offer = ["launch-preparation-erofs"]
+launch-preparation-custody = ["launch-preparation-offer"]
+launch-preparation-receive = ["launch-preparation-mount"]
+launch-preparation-execution = ["launch-preparation-receive"]
+launch-preparation-receive-core = []
+launch-preparation-mount-native = ["launch-preparation-mount"]
+
+[dependencies]
+nix = { version = "=0.31.3", features = ["fs"] }
+sha2 = "=0.11.0"
+thiserror = "=2.0.18"
+base64 = { version = "=0.23.1", optional = true }
+serde = { version = "=1.0.228", features = ["derive"], optional = true }
+serde_json = { version = "=1.0.150", optional = true }
+sigstore = { version = "=0.13.0", default-features = false, optional = true }
+oci-spec = { version = "=0.10.0", optional = true }
+ocicrypt-rs = { package = "onb17-ocicrypt-source-checks", path = "ocicrypt-leaf", default-features = false, features = ["block-cipher-ring", "async-io"], optional = true }
+tokio = { version = "=1.52.3", features = ["rt", "macros", "io-util"], optional = true }
+flate2 = { version = "=1.1.9", optional = true }
+zeroize = { version = "=1.9.0", optional = true }
+async-compression = { version = "=0.4.43", features = ["tokio", "gzip"], optional = true }
+tokio-tar = { package = "astral-tokio-tar", version = "=0.6.4", optional = true }
+reqwest = { version = "=0.13.4", default-features = false, features = ["rustls"], optional = true }
+url = { version = "=2.5.8", optional = true }
+
+[dev-dependencies]
+openssl = { version = "=0.10.81", features = ["vendored"] }
+tokio = { version = "=1.52.3", features = ["rt", "macros", "time", "sync"] }
+
+[[test]]
+name = "native_erofs_mount"
+path = "native-erofs-mount.rs"
+harness = false
+required-features = ["launch-preparation-mount-native"]
+
+[[test]]
+name = "native_ramfs_backing"
+path = "native-ramfs-backing.rs"
+harness = false
+required-features = ["launch-preparation-mount-native"]

@@ -1,0 +1,74 @@
+[package]
+name = "onb17-launch-credential-checks"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+members = ["attester-leaf", "crypto-leaf"]
+exclude = ["kms-leaf"]
+resolver = "2"
+
+[features]
+default = ["launch-recorder"]
+launch-recorder = []
+launch-recorder-gcp = ["launch-recorder"]
+launch-recorder-gcp-tdx = ["launch-recorder-gcp", "attester/execution-quote-tdx"]
+launch-recorder-tdx = ["launch-recorder", "attester/tdx-attester"]
+launch-credential = ["launch-recorder", "dep:kms", "dep:execution-proof-handoff"]
+launch-credential-gcp = ["launch-credential", "launch-recorder-gcp", "kms/launch-credential-gcp"]
+launch-preparation = ["launch-credential", "dep:percent-encoding"]
+launch-preparation-gcp = ["launch-preparation", "launch-credential-gcp"]
+launch-preparation-content-gcp = ["launch-preparation-content", "launch-preparation-gcp"]
+launch-preparation-content = ["launch-preparation", "dep:image-rs", "dep:sigstore", "dep:ocicrypt-rs", "dep:flate2"]
+launch-preparation-runtime = ["launch-preparation-content", "image-rs/launch-preparation-registry", "tokio/sync", "tokio/time", "dep:openssl"]
+launch-preparation-runtime-gcp = ["launch-preparation-runtime", "launch-preparation-content-gcp"]
+launch-preparation-executable = ["launch-preparation-runtime", "image-rs/launch-preparation-executable"]
+launch-preparation-erofs = ["launch-preparation-executable", "image-rs/launch-preparation-erofs"]
+launch-preparation-mount = ["launch-preparation-erofs", "image-rs/launch-preparation-mount"]
+launch-preparation-offer = ["launch-preparation-erofs", "image-rs/launch-preparation-offer", "execution-proof-handoff/rootfs-transfer"]
+launch-preparation-custody = ["launch-preparation-offer", "image-rs/launch-preparation-custody", "execution-proof-handoff/rootfs-custody"]
+launch-preparation-custody-native = ["launch-preparation-custody", "image-rs/launch-preparation-receive"]
+launch-preparation-mount-native = ["launch-preparation-mount"]
+launch-preparation-final-task-native = ["launch-preparation-custody-native", "launch-preparation-mount-native"]
+
+[dependencies]
+openssl = { version = "=0.10.81", optional = true }
+attester = { package = "onb17-attester-source-checks", path = "attester-leaf" }
+kms = { package = "onb17-kms-gcp-source-checks", path = "kms-leaf", optional = true }
+crypto = { package = "onb17-crypto-source-checks", path = "crypto-leaf" }
+execution-proof-client = { path = "../../../execution-proof-prototype/client" }
+execution-proof-contract = { path = "../../../execution-proof-prototype/contract" }
+execution-proof-handoff = { path = "../../../execution-proof-prototype/handoff", optional = true }
+legacy-kbs-types = { package = "kbs-types", version = "=0.15.0" }
+kbs-types = "=0.18.0"
+ring = "=0.17.14"
+anyhow = "=1.0.103"
+async-trait = "=0.1.89"
+base64 = "=0.23.1"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.150"
+serde_json_canonicalizer = "=0.3.2"
+tracing = "=0.1.44"
+sha2 = "=0.11.0"
+percent-encoding = { version = "=2.3.2", optional = true }
+image-rs = { package = "onb17-sealed-image-source-checks", path = "../../image-rs/tests/launch-preparation-checks", default-features = false, features = ["launch-preparation-signature", "launch-preparation-content"], optional = true }
+sigstore = { version = "=0.13.0", default-features = false, optional = true }
+ocicrypt-rs = { package = "onb17-ocicrypt-source-checks", path = "../../image-rs/tests/launch-preparation-checks/ocicrypt-leaf", default-features = false, features = ["block-cipher-ring", "async-io"], optional = true }
+flate2 = { version = "=1.1.9", optional = true }
+zeroize = "=1.9.0"
+tokio = { version = "=1.52.3", features = ["rt", "macros"] }
+
+[dev-dependencies]
+credential_jwe = { package = "onb17-jwe-source-checks", path = "../../../trustee-launch-dev/tests/launch-policy-capture/jwe-leaf" }
+rstest = "=0.26.1"
+rsa = { version = "=0.9.10", features = ["sha2"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("pqc-experimental", "final-task", "protected-export", "protected-export-gcp-tdx"))'] }
+
+[[bin]]
+name = "onb17-kata-custody-receiver-fixture"
+path = "native-kata-custody-receiver.rs"
+test = false
+required-features = ["launch-preparation-custody-native"]

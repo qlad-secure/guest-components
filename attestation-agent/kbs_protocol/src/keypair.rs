@@ -222,21 +222,37 @@ impl TeeKeyPair {
         }
     }
 
-    pub fn decrypt_response(&self, response: Response) -> Result<Vec<u8>> {
-        // unwrap the wrapped key
-        let cek = self.unwrap_cek(&response.protected, response.encrypted_key)?;
+    pub fn decrypt_response(&self, mut response: Response) -> Result<Vec<u8>> {
+        let wrapped_cek = std::mem::take(&mut response.encrypted_key);
+        let cek = self.unwrap_cek(&response.protected, wrapped_cek)?;
+        Self::decrypt_payload(response, Zeroizing::new(cek))
+    }
 
+    #[cfg(feature = "launch-recorder-gcp")]
+    pub(crate) fn decrypt_gcp_credential_response(&self, response: Response) -> Result<Vec<u8>> {
+        if response.protected.alg != PaddingMode::OAEP.as_ref()
+            || response.protected.enc != "A256GCM"
+            || response.aad.is_some()
+        {
+            bail!("Invalid GCP credential encryption profile");
+        }
+        let TeeKey::Rsa(key) = &self.key else {
+            bail!("GCP credential delivery requires an RSA key");
+        };
+        let cek = key.decrypt_oaep256(&response.encrypted_key)?;
+        Self::decrypt_payload(response, cek)
+    }
+
+    fn decrypt_payload(response: Response, cek: Zeroizing<Vec<u8>>) -> Result<Vec<u8>> {
         let aad = response.protected.generate_aad()?;
-        let plaintext = crypto::decrypt_aead(
-            Zeroizing::new(cek),
+        crypto::decrypt_aead(
+            cek,
             response.ciphertext,
             response.iv,
             aad,
             response.tag,
             crypto::WrapType::Aes256Gcm,
-        )?;
-
-        Ok(plaintext)
+        )
     }
 }
 
