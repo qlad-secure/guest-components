@@ -331,7 +331,8 @@ fn decode(value: &str, max: usize) -> Result<Zeroizing<Vec<u8>>, LayerContentErr
     if bytes.is_empty() {
         return Err(LayerContentError::InvalidOptions);
     }
-    if STANDARD.encode(bytes.as_slice()) != value {
+    let canonical = Zeroizing::new(STANDARD.encode(bytes.as_slice()));
+    if canonical.as_str() != value {
         return Err(LayerContentError::InvalidOptions);
     }
     Ok(bytes)
