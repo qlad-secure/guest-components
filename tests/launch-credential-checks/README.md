@@ -65,13 +65,8 @@ cargo +stable test --locked --offline --features launch-preparation-content -- -
 cargo +stable clippy --locked --offline --all-targets --features launch-preparation-content -- -D warnings
 ```
 
-The leaf manifests omit optional Git/TEE backends and use a smaller dependency
-graph than the parent workspace. Compatible patches include `serde_json
-1.0.150`, `aes-gcm 0.11.0`, `p256 0.13.2`, `zeroize 1.9.0`, `serde_with 3.22.0`,
-and `thiserror 2.0.18`. Keep the lockfile: its pinned `der 0.8.0` entry is yanked.
-Clippy allowances for async-trait-generated `double_must_use` annotations and
-Scroll Pread's `redundant_field_names` in `tdx/report.rs` apply only to the test
-leaf, without changing product lint settings.
+Use the checked-in lockfile. The harness omits optional Git/TEE backends and
+retains a yanked transitive dependency.
 
 Run from this directory with the locked dependencies available offline:
 

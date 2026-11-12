@@ -327,9 +327,7 @@ fn successful_syscall_fd_is_adopted_once_and_failed_fd_keeps_its_errno() {
 
 #[test]
 fn mounted_owner_has_no_clone_descriptor_export_or_arbitrary_file_adoption_traits() {
-    // This compile-time ambiguity check fails if any listed capability-export
-    // or unchecked-adoption trait is added to the mounted owner. It does not
-    // replace the source review of its methods and private fields.
+    // Adding a listed trait makes the inferred marker ambiguous.
     trait ForbiddenCapabilityTrait<Marker> {
         fn check() {}
     }
